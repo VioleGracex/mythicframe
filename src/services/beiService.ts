@@ -558,6 +558,7 @@ export const generateWithBEI = async (
       tabSessionId: params.tabSessionId,
       images: processedImages,
       preferredBrowser: getEffectiveBEIBrowser(),
+      quality: config.downloadQuality || 'ultra_original',
     };
 
     if (params.signal) {

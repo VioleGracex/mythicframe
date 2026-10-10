@@ -360,7 +360,12 @@
       if (url.startsWith('data:image')) return url;
 
       const upgradedUrl = this.upgradeToHighResUrl(url, quality);
-      const urlCandidates = Array.from(new Set([upgradedUrl, url].filter(Boolean)));
+      // For ultra_original (=s0) the CDN sometimes rejects the request; fall back to the
+      // reliable =s2048 master before collapsing to the raw low-res preview thumbnail.
+      const fallbackCandidates = quality === 'ultra_original'
+        ? [upgradedUrl, this.upgradeToHighResUrl(url, 'high'), url]
+        : [upgradedUrl, url];
+      const urlCandidates = Array.from(new Set(fallbackCandidates.filter(Boolean)));
 
       for (const targetUrl of urlCandidates) {
         for (let attempt = 1; attempt <= 2; attempt++) {

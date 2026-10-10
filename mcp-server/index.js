@@ -969,6 +969,7 @@ import path2 from "path";
 // src/mcp/beiClient.ts
 import fs from "fs";
 import path from "path";
+import os from "os";
 import { spawn } from "child_process";
 var BRIDGE_PORT = Number(process.env.BEI_PORT) || 58925;
 var WEB_PORT = Number(process.env.PORT) || 3488;
@@ -1240,11 +1241,35 @@ async function generateWithBEI(options) {
     fs.mkdirSync(outDir, { recursive: true });
   }
   const base64Data = result.image.replace(/^data:image\/\w+;base64,/, "");
-  const buffer = Buffer.from(base64Data, "base64");
+  let buffer = Buffer.from(base64Data, "base64");
   const isPng = result.image.startsWith("data:image/png");
   const extension = isPng ? "png" : "jpg";
   const fileName = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
   const filePath = path.join(outDir, fileName);
+  if (buffer.length < 500 * 1024 && quality !== "standard") {
+    try {
+      const downloadsDir = path.join(os.homedir(), "Downloads");
+      if (fs.existsSync(downloadsDir)) {
+        const files = fs.readdirSync(downloadsDir).filter((f) => /Gemini_Generated_Image/i.test(f) && /\.(jpe?g|png)$/i.test(f)).map((f) => {
+          const fullPath = path.join(downloadsDir, f);
+          const stat = fs.statSync(fullPath);
+          return { fullPath, mtimeMs: stat.mtimeMs, size: stat.size };
+        }).filter((f) => Date.now() - f.mtimeMs < 9e4 && f.size > 700 * 1024).sort((a, b) => b.mtimeMs - a.mtimeMs);
+        if (files.length > 0) {
+          const masterFile = files[0];
+          const masterBuffer = fs.readFileSync(masterFile.fullPath);
+          buffer = masterBuffer;
+          result.image = `data:image/jpeg;base64,${masterBuffer.toString("base64")}`;
+          try {
+            fs.unlinkSync(masterFile.fullPath);
+          } catch (e) {
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[MythicFrame BEI] Downloads safety check notice:", err);
+    }
+  }
   fs.writeFileSync(filePath, buffer);
   return {
     success: true,
@@ -1861,15 +1886,21 @@ Summary: ${status.summary}`;
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, "/");
       const fileName = path2.basename(beiRes.filePath);
+      let sizeMB = "";
+      try {
+        const stats = fs2.statSync(beiRes.filePath);
+        sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
+      } catch (e) {
+      }
       return {
         content: [{
           type: "text",
           text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!
 
-Image saved to: ${beiRes.filePath}
+Image saved to: ${beiRes.filePath}${sizeMB}
 Job ID: ${beiRes.jobId}
 Quality: ${args.quality || "ultra_original"}
-Dispatch Mode: ${args.dispatchMode || "single"}
+File Size: ${sizeMB.trim() || "Unknown"}
 
 Please embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
         }]
@@ -1896,13 +1927,20 @@ Please embed this image for the user, AND provide a clickable markdown link [${f
         });
         const formattedPath = beiRes.filePath.replace(/\\/g, "/");
         const fileName = path2.basename(beiRes.filePath);
+        let sizeMB = "";
+        try {
+          const stats = fs2.statSync(beiRes.filePath);
+          sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
+        } catch (e) {
+        }
         return {
           content: [{
             type: "text",
             text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!
 
-Image saved to: ${beiRes.filePath}
+Image saved to: ${beiRes.filePath}${sizeMB}
 Quality: ${args.quality || "ultra_original"}
+File Size: ${sizeMB.trim() || "Unknown"}
 Dispatch Mode: ${args.dispatchMode || "single"}
 
 Please embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
@@ -1926,13 +1964,20 @@ Please embed this image for the user, AND provide a clickable markdown link [${f
         });
         const formattedPath = beiRes.filePath.replace(/\\/g, "/");
         const fileName = path2.basename(beiRes.filePath);
+        let sizeMB = "";
+        try {
+          const stats = fs2.statSync(beiRes.filePath);
+          sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
+        } catch (e) {
+        }
         return {
           content: [{
             type: "text",
             text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!
 
-Image saved to: ${beiRes.filePath}
+Image saved to: ${beiRes.filePath}${sizeMB}
 Quality: ${args.quality || "ultra_original"}
+File Size: ${sizeMB.trim() || "Unknown"}
 Dispatch Mode: ${args.dispatchMode || "single"}
 
 Please embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`

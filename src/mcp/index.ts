@@ -623,10 +623,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, '/');
       const fileName = path.basename(beiRes.filePath);
+      let sizeMB = '';
+      try {
+        const stats = fs.statSync(beiRes.filePath);
+        sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
+      } catch (e) {}
       return {
         content: [{
           type: "text",
-          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!\n\nImage saved to: ${beiRes.filePath}\nJob ID: ${beiRes.jobId}\nQuality: ${args.quality || 'ultra_original'}\nDispatch Mode: ${args.dispatchMode || 'single'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
+          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!\n\nImage saved to: ${beiRes.filePath}${sizeMB}\nJob ID: ${beiRes.jobId}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
         }]
       };
     }
@@ -654,10 +659,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         const formattedPath = beiRes.filePath.replace(/\\/g, '/');
         const fileName = path.basename(beiRes.filePath);
+        let sizeMB = '';
+        try {
+          const stats = fs.statSync(beiRes.filePath);
+          sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
+        } catch (e) {}
         return {
           content: [{
             type: "text",
-            text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!\n\nImage saved to: ${beiRes.filePath}\nQuality: ${args.quality || 'ultra_original'}\nDispatch Mode: ${args.dispatchMode || 'single'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
+            text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!\n\nImage saved to: ${beiRes.filePath}${sizeMB}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\nDispatch Mode: ${args.dispatchMode || 'single'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
           }]
         };
       }
@@ -681,10 +691,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         const formattedPath = beiRes.filePath.replace(/\\/g, '/');
         const fileName = path.basename(beiRes.filePath);
+        let sizeMB = '';
+        try {
+          const stats = fs.statSync(beiRes.filePath);
+          sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
+        } catch (e) {}
         return {
           content: [{
             type: "text",
-            text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!\n\nImage saved to: ${beiRes.filePath}\nQuality: ${args.quality || 'ultra_original'}\nDispatch Mode: ${args.dispatchMode || 'single'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
+            text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!\n\nImage saved to: ${beiRes.filePath}${sizeMB}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\nDispatch Mode: ${args.dispatchMode || 'single'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
           }]
         };
       }

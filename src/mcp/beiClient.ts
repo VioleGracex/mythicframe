@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { spawn } from 'child_process';
 
 export interface BEITabInfo {
@@ -393,11 +394,40 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
   }
 
   const base64Data = result.image.replace(/^data:image\/\w+;base64,/, '');
-  const buffer = Buffer.from(base64Data, 'base64');
+  let buffer = Buffer.from(base64Data, 'base64');
   const isPng = result.image.startsWith('data:image/png');
   const extension = isPng ? 'png' : 'jpg';
   const fileName = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
   const filePath = path.join(outDir, fileName);
+
+  // Safety net: if returned payload is a low-res thumbnail (< 500 KB) and quality is ultra_original,
+  // check if Chrome downloaded the full ~2.4MB master into OS Downloads folder
+  if (buffer.length < 500 * 1024 && quality !== 'standard') {
+    try {
+      const downloadsDir = path.join(os.homedir(), 'Downloads');
+      if (fs.existsSync(downloadsDir)) {
+        const files = fs.readdirSync(downloadsDir)
+          .filter(f => /Gemini_Generated_Image/i.test(f) && /\.(jpe?g|png)$/i.test(f))
+          .map(f => {
+            const fullPath = path.join(downloadsDir, f);
+            const stat = fs.statSync(fullPath);
+            return { fullPath, mtimeMs: stat.mtimeMs, size: stat.size };
+          })
+          .filter(f => Date.now() - f.mtimeMs < 90000 && f.size > 700 * 1024)
+          .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+        if (files.length > 0) {
+          const masterFile = files[0];
+          const masterBuffer = fs.readFileSync(masterFile.fullPath);
+          buffer = masterBuffer;
+          result.image = `data:image/jpeg;base64,${masterBuffer.toString('base64')}`;
+          try { fs.unlinkSync(masterFile.fullPath); } catch (e) {}
+        }
+      }
+    } catch (err) {
+      console.warn('[MythicFrame BEI] Downloads safety check notice:', err);
+    }
+  }
 
   fs.writeFileSync(filePath, buffer);
 

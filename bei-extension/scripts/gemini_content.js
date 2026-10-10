@@ -1118,130 +1118,66 @@
     return { ok: false, reason: 'Pre-send verification timed out after 3 remediation cycles.' };
   }
 
-  function findDownloadFullSizeButton(imgOrContainer) {
-    try {
-      const container = (imgOrContainer && imgOrContainer.closest 
-        ? imgOrContainer.closest('model-response, conversation-turn, image-card, .image-card, .generated-image, div.response-container, [data-test-id*="response"]') 
-        : null) || (imgOrContainer && imgOrContainer.parentElement ? imgOrContainer.parentElement.parentElement : null) || document.body;
-
-      if (!container) return null;
-
-      // 1. Look for mat-icon with download name or fonticon
-      const icon = container.querySelector('mat-icon[data-mat-icon-name="download"], mat-icon[fonticon="download"], [data-mat-icon-name="download"]');
-      if (icon) {
-        const btn = icon.closest('button, a, [role="button"]') || icon;
-        if (btn) return btn;
-      }
-
-      // 2. Look for button or anchor matching "download full size" in aria-label, tooltip, or title
-      const btn = container.querySelector(
-        'button[aria-label*="download full size" i], a[aria-label*="download full size" i], ' +
-        'button[mattooltip*="download full size" i], a[mattooltip*="download full size" i], ' +
-        'button[title*="download full size" i], a[title*="download full size" i], ' +
-        'button[aria-label*="download" i], a[aria-label*="download" i], ' +
-        '[data-test-id*="download" i]'
-      );
-      if (btn) return btn;
-    } catch (e) {
-      console.debug('[MythicFrame BEI] Error finding download button:', e);
-    }
-    return null;
+  function awaitPageFullSize(timeoutMs = 22000) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (result) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener('message', onMsg);
+        try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'DISARM_FULLSIZE' }, '*'); } catch (e) {}
+        resolve(result);
+      };
+      const onMsg = (e) => {
+        if (e.source !== window || !e.data || e.data.source !== 'MYTHIC_BEI_PAGE' || e.data.type !== 'FULLSIZE_CAPTURE') return;
+        const d = e.data.dataUrl;
+        if (typeof d === 'string' && d.startsWith('data:image') && d.length > 700000) finish({ success: true, dataUrl: d });
+      };
+      window.addEventListener('message', onMsg);
+      try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'ARM_FULLSIZE' }, '*'); } catch (e) {}
+      setTimeout(() => finish({ success: false, dataUrl: '' }), timeoutMs);
+    });
   }
 
-  async function triggerNativeDownloadButton(downloadBtn, timeoutMs = 2000) {
-    if (!downloadBtn) return null;
+  async function clickDownloadForImage(imgEl, jobId) {
     try {
-      if (downloadBtn.tagName === 'A' && downloadBtn.href && !downloadBtn.href.startsWith('javascript:')) {
-        return downloadBtn.href;
+      const scope = (imgEl && imgEl.closest)
+        ? (imgEl.closest('message-content, model-response, .response-container, [data-test-id*="response"], single-image, generated-image, image-element') || document)
+        : document;
+      const directSel = "button[aria-label*='download' i], [role='button'][aria-label*='download' i], button[mattooltip*='download' i], button[title*='download' i], a[download][href]";
+      let btn = scope.querySelector(directSel) || document.querySelector(directSel);
+      if (btn) {
+        btn.click();
+        if (jobId) reportProgress(jobId, 'full_size', 'Clicked Download control for full-size master...');
+        return true;
       }
-
-      return new Promise((resolve) => {
-        let finished = false;
-        let originalAnchorClick = null;
-
-        const cleanup = () => {
-          if (finished) return;
-          finished = true;
-          window.removeEventListener('click', clickInterceptor, true);
-          if (originalAnchorClick && HTMLAnchorElement.prototype.click === patchedAnchorClick) {
-            HTMLAnchorElement.prototype.click = originalAnchorClick;
-          }
-          clearTimeout(timer);
-        };
-
-        const timer = setTimeout(() => {
-          cleanup();
-          resolve(null);
-        }, timeoutMs);
-
-        const clickInterceptor = (e) => {
-          try {
-            const anchor = e.target && e.target.closest ? e.target.closest('a') : null;
-            if (anchor && anchor.href) {
-              const href = anchor.href;
-              if (anchor.hasAttribute('download') || href.includes('googleusercontent.com') || href.startsWith('blob:') || href.includes('image_retrieval')) {
-                e.preventDefault();
-                e.stopPropagation();
-                cleanup();
-                resolve(href);
-              }
-            }
-          } catch (err) {}
-        };
-
-        const patchedAnchorClick = function() {
-          try {
-            if (this.href && (this.hasAttribute('download') || this.href.includes('googleusercontent.com') || this.href.startsWith('blob:') || this.href.includes('image_retrieval'))) {
-              cleanup();
-              resolve(this.href);
-              return;
-            }
-          } catch (err) {}
-          return originalAnchorClick.apply(this, arguments);
-        };
-
+      const moreSel = "button[aria-label*='more' i], button[aria-label*='options' i], button[aria-label*='More options' i]";
+      const moreBtns = Array.from(scope.querySelectorAll(moreSel));
+      for (const mb of moreBtns) {
         try {
-          originalAnchorClick = HTMLAnchorElement.prototype.click;
-          HTMLAnchorElement.prototype.click = patchedAnchorClick;
-          window.addEventListener('click', clickInterceptor, true);
-
-          downloadBtn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }));
-          downloadBtn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-          downloadBtn.click();
-        } catch (dispatchErr) {
-          cleanup();
-          resolve(null);
-        }
-      });
+          mb.click();
+          await new Promise(r => setTimeout(r, 450));
+          const items = Array.from(document.querySelectorAll("[role='menuitem'], .mat-mdc-menu-item, button"));
+          const dl = items.find(m => /download/.test(((m.innerText || m.textContent || '') + ' ' + (m.getAttribute('aria-label') || '')).toLowerCase()));
+          if (dl) {
+            dl.click();
+            if (jobId) reportProgress(jobId, 'full_size', 'Selected "Download" from image menu for full-size master...');
+            return true;
+          }
+          document.body.click();
+        } catch (e) {}
+      }
+      return false;
     } catch (e) {
-      return null;
+      console.warn('[MythicFrame BEI] clickDownloadForImage notice:', e);
+      return false;
     }
   }
+
 
   async function extractFullResolutionAsset(imgOrUrl, quality = 'ultra_original') {
     let finalData = '';
     let srcUrl = '';
-
-    // Ultra quality: Attempt extraction via native "Download full size" button first
-    if ((quality === 'ultra_original' || quality === 'ultra') && typeof imgOrUrl !== 'string' && imgOrUrl) {
-      try {
-        const downloadBtn = findDownloadFullSizeButton(imgOrUrl);
-        if (downloadBtn) {
-          console.log('[MythicFrame BEI] Located native "Download full size" button! Triggering capture...');
-          const capturedUrl = await triggerNativeDownloadButton(downloadBtn, 2000);
-          if (capturedUrl) {
-            console.log(`✅ [MythicFrame BEI] Captured full size URL via Download button: ${capturedUrl.substring(0, 100)}...`);
-            srcUrl = capturedUrl;
-            finalData = await protocol.fetchBlobAsBase64(capturedUrl, quality);
-            if (finalData && finalData.startsWith('data:image')) {
-              return { finalData, srcUrl };
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('[MythicFrame BEI] Notice triggering native download button, falling back to CDN upgrade:', err);
-      }
-    }
 
     if (typeof imgOrUrl === 'string') {
       srcUrl = imgOrUrl;
@@ -1570,7 +1506,46 @@
 
       reportProgress(jobId, 'capturing_image', 'Generated artwork detected! Extracting high-resolution asset...');
 
-      const { finalData, srcUrl } = await extractFullResolutionAsset(imgOrUrl, quality);
+      let finalData = '';
+      let srcUrl = (typeof imgOrUrl === 'string') ? imgOrUrl : (imgOrUrl.currentSrc || imgOrUrl.src || '');
+
+      // Full-size (2K) master capture: Gemini only renders the high-res image when its
+      // native Download runs (2-step generation), and saves it via a page blob: download.
+      // Capture the bytes in-page (page_hook.js, MAIN world); also arm the background
+      // worker for direct-URL setups. Fall back to the on-page preview below.
+      if (quality !== 'standard' && typeof imgOrUrl !== 'string' && typeof chrome !== 'undefined' && chrome.runtime) {
+        try {
+          reportProgress(jobId, 'full_size', 'Requesting Gemini full-size (2K) master via Download...');
+          const pagePromise = awaitPageFullSize(22000);
+          const bgPromise = chrome.runtime.sendMessage({ type: 'ARM_FULLSIZE_CAPTURE', data: { jobId } }).catch(() => ({ success: false, dataUrl: '' }));
+          await new Promise(r => setTimeout(r, 400));
+          const clicked = await clickDownloadForImage(imgOrUrl, jobId);
+          if (clicked) {
+            const hb = setInterval(() => reportProgress(jobId, 'full_size', 'Rendering full-size (2K) master...'), 3000);
+            let pageRes = null, bgRes = null;
+            try { [pageRes, bgRes] = await Promise.all([pagePromise, bgPromise]); } finally { clearInterval(hb); }
+            const cap = [pageRes, bgRes].find(r => r && r.success && typeof r.dataUrl === 'string' && r.dataUrl.startsWith('data:image') && r.dataUrl.length > 700000);
+            if (cap) {
+              finalData = cap.dataUrl;
+              reportProgress(jobId, 'full_size_captured', `Full-size master captured (${Math.round(finalData.length / 1024)} KB).`);
+              try { chrome.runtime.sendMessage({ type: 'REMOVE_FULLSIZE_DOWNLOAD', data: { jobId } }); } catch (e) {}
+            }
+          } else {
+            try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'DISARM_FULLSIZE' }, '*'); } catch (e) {}
+            try { chrome.runtime.sendMessage({ type: 'DISARM_FULLSIZE_CAPTURE', data: { jobId } }); } catch (e) {}
+            if (pagePromise && pagePromise.catch) pagePromise.catch(() => {});
+            if (bgPromise && bgPromise.catch) bgPromise.catch(() => {});
+          }
+        } catch (e) {
+          console.warn('[MythicFrame BEI] Full-size capture notice:', e);
+        }
+      }
+
+      if (!finalData) {
+        const extracted = await extractFullResolutionAsset(imgOrUrl, quality);
+        finalData = extracted.finalData;
+        srcUrl = extracted.srcUrl || srcUrl;
+      }
 
       // Candidate grid detection (multiple images in Imagen 3 responses)
       const grid = protocol.detectCandidateGrid ? protocol.detectCandidateGrid(document.body) : null;

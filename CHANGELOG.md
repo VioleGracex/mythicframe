@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.0] — 2026-10-11 *(BEI Extension v1.5.0)*
+
+### Added
+- **Gemini Full-Size 2K Master Interception Pipeline**:
+  - Injected MAIN-world `page_hook.js` at `document_start` to intercept Gemini's native 2K master blob generated upon clicking Download.
+  - Converts full-resolution master Blob in-memory via `FileReader` and delivers it to MythicFrame via window messaging, eliminating low-resolution preview thumbnail downgrades.
+  - Suppressed duplicate browser disk downloads once master bytes are confirmed.
+  - Added background worker cleanup listener for direct-URL downloads with `downloads` permission.
+  - Added automated fallback safety net in `beiClient.ts` to move downloaded master assets from OS Downloads directly into `outputs/bei/`.
+  - Added exact file size reporting in MCP server responses.
+
+---
+
 ## [1.5.9] — 2026-10-10 *(BEI Extension v1.4.1)*
 
 ### Added

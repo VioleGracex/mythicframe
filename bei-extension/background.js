@@ -40,6 +40,10 @@ const slotQueues = new Map(); // slotKey -> Array<jobData>
 const tabEmailsCache = new Map(); // tabId -> email string
 const knownGoogleAccounts = new Map(); // slot -> { slot, email, name }
 const inFlightTabCreations = new Map(); // target:slot -> Promise<tabId>
+const pendingFullSizeCaptures = new Map(); // jobId -> { resolve, timer } for native 2K Download capture
+let lastGeminiDownloadId = null;           // most recent Gemini image download observed while a capture was armed
+let lastGeminiDownloadAt = 0;
+const removeWhenComplete = new Set();      // download ids to delete from disk once they finish
 
 let cachedBrowserInfo = { browser: 'chrome', browserName: 'Google Chrome' };
 async function detectExtensionBrowser() {
@@ -1367,8 +1371,116 @@ async function fetchUrlAsBase64(url) {
   return url;
 }
 
+async function fetchExactUrlAsBase64(url) {
+  if (!url || typeof url !== 'string') return '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(url, { credentials: 'include' });
+      if (res.ok) {
+        const mime = res.headers.get('content-type') || 'image/jpeg';
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i += 8192) binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, bytes.byteLength)));
+        const dataUrl = `data:${mime};base64,${btoa(binary)}`;
+        if (dataUrl.startsWith('data:image') && dataUrl.length > 512) return dataUrl;
+      }
+    } catch (e) { console.warn('[MythicFrame BEI Worker] Exact fetch notice:', e); }
+    await new Promise(r => setTimeout(r, 250 * attempt));
+  }
+  return '';
+}
+
+// Capture Gemini's native full-size (2K) download when a capture is armed.
+if (typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.onCreated) {
+  chrome.downloads.onCreated.addListener(async (item) => {
+    if (pendingFullSizeCaptures.size === 0) return;
+    const first = pendingFullSizeCaptures.entries().next().value;
+    if (!first) return;
+    const [jobId, pending] = first;
+    const url = (item && (item.finalUrl || item.url)) || '';
+    const isFetchable = /^https?:/i.test(url) && /googleusercontent\.com|gstatic\.com/i.test(url);
+    if (!isFetchable) {
+      // Blob download (bytes captured in-page by page_hook.js). Record it so a confirmed
+      // capture can delete the duplicate file from the user's Downloads.
+      if (/Gemini_Generated_Image/i.test(item.filename || '') || /^blob:https?:\/\/gemini\.google\.com/i.test(url)) {
+        lastGeminiDownloadId = item.id;
+        lastGeminiDownloadAt = Date.now();
+      }
+      clearTimeout(pending.timer);
+      pendingFullSizeCaptures.delete(jobId);
+      pending.resolve({ success: false, dataUrl: '' });
+      return;
+    }
+    try { if (chrome.downloads.cancel) await chrome.downloads.cancel(item.id); } catch (e) {}
+    try { if (chrome.downloads.erase) chrome.downloads.erase({ id: item.id }); } catch (e) {}
+    const dataUrl = await fetchExactUrlAsBase64(url);
+    if (!pendingFullSizeCaptures.has(jobId)) return;
+    clearTimeout(pending.timer);
+    pendingFullSizeCaptures.delete(jobId);
+    pending.resolve(dataUrl && dataUrl.startsWith('data:image') ? { success: true, dataUrl } : { success: false, dataUrl: '' });
+  });
+}
+
+// Track Gemini download filenames (set after creation) and delete approved files once complete.
+if (typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.onChanged) {
+  chrome.downloads.onChanged.addListener((delta) => {
+    try {
+      if (delta.filename && delta.filename.current && /Gemini_Generated_Image/i.test(delta.filename.current) && (Date.now() - lastGeminiDownloadAt < 60000)) {
+        lastGeminiDownloadId = delta.id;
+        lastGeminiDownloadAt = Date.now();
+      }
+      if (delta.state && delta.state.current === 'complete' && removeWhenComplete.has(delta.id)) {
+        removeWhenComplete.delete(delta.id);
+        try { chrome.downloads.removeFile(delta.id, () => void (chrome.runtime && chrome.runtime.lastError)); } catch (e) {}
+        try { chrome.downloads.erase({ id: delta.id }); } catch (e) {}
+      }
+    } catch (e) {}
+  });
+}
+
 // Listen for messages from content scripts and extension popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "ARM_FULLSIZE_CAPTURE") {
+    const jobId = message.data?.jobId || 'unknown';
+    if (typeof chrome === 'undefined' || !chrome.downloads) {
+      sendResponse({ success: false, dataUrl: '' });
+      return true;
+    }
+    const existing = pendingFullSizeCaptures.get(jobId);
+    if (existing) { clearTimeout(existing.timer); try { existing.resolve({ success: false, dataUrl: '' }); } catch (e) {} pendingFullSizeCaptures.delete(jobId); }
+    const timer = setTimeout(() => {
+      const p = pendingFullSizeCaptures.get(jobId);
+      if (p) { pendingFullSizeCaptures.delete(jobId); p.resolve({ success: false, dataUrl: '' }); }
+    }, 25000);
+    pendingFullSizeCaptures.set(jobId, { resolve: sendResponse, timer });
+    return true;
+  }
+
+  if (message.type === "DISARM_FULLSIZE_CAPTURE") {
+    const jobId = message.data?.jobId;
+    const p = jobId && pendingFullSizeCaptures.get(jobId);
+    if (p) { clearTimeout(p.timer); pendingFullSizeCaptures.delete(jobId); try { p.resolve({ success: false, dataUrl: '' }); } catch (e) {} }
+    return;
+  }
+
+  if (message.type === "REMOVE_FULLSIZE_DOWNLOAD") {
+    const id = lastGeminiDownloadId;
+    const fresh = id != null && (Date.now() - lastGeminiDownloadAt < 60000);
+    lastGeminiDownloadId = null;
+    if (fresh && typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.search) {
+      chrome.downloads.search({ id }, (results) => {
+        const d = results && results[0];
+        if (d && d.state === 'complete') {
+          try { chrome.downloads.removeFile(id, () => void (chrome.runtime && chrome.runtime.lastError)); } catch (e) {}
+          try { chrome.downloads.erase({ id }); } catch (e) {}
+        } else {
+          removeWhenComplete.add(id);
+        }
+      });
+    }
+    return;
+  }
+
   if (message.type === "GENERATION_PROGRESS") {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
