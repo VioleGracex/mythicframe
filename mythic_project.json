@@ -11,5 +11,6 @@
     "name": "Tactical Dark Fantasy",
     "promptSnippet": ", arknights style, tactical anime aesthetic, urban dark fantasy, muted colors with vibrant highlights"
   },
-  "defaultModelQuality": "auto"
+  "defaultModelQuality": "auto",
+  "autoExecuteGeneration": true
 }
