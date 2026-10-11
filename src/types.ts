@@ -118,12 +118,31 @@ export interface ChibiConfig {
   focus: 'kawaii' | 'detailed'; // Simple vs Textured
 }
 
+export type CameraFraming = 
+  | 'extreme_close_up'
+  | 'big_close_up'
+  | 'close_up'
+  | 'medium_close_up'
+  | 'bust_shot'
+  | 'medium_shot'
+  | 'medium_long_shot'
+  | 'three_quarter_shot'
+  | 'american_shot'
+  | 'full_shot'
+  | 'long_shot'
+  | 'extreme_long_shot'
+  | 'very_wide_shot'
+  | 'full-body'
+  | 'waist-up'
+  | 'bust'
+  | 'head-only';
+
 // Added ClothesParams to define valid rendering and layout modes for the Clothes Designer feature
 export interface ClothesParams {
   renderMode: 'model' | 'asset';
   layout: 'assembled' | 'spread';
   lockPose: boolean;
-  framing: 'full-body' | 'waist-up' | 'bust' | 'head-only';
+  framing: CameraFraming;
 }
 
 export interface GameContext {
@@ -154,7 +173,7 @@ export interface GachaAsset {
   locked?: boolean;
   chibiProportions?: ChibiProportion;
   chibiConfig?: ChibiConfig;
-  framing?: 'full-body' | 'waist-up' | 'bust' | 'head-only';
+  framing?: CameraFraming;
 }
 
 export interface BackgroundConfig {
@@ -450,7 +469,7 @@ export interface WorkspaceTab {
   clothesParams: ClothesParams;
   chibiConfig?: ChibiConfig;
   noCharacters?: boolean;
-  framing?: 'full-body' | 'waist-up' | 'bust' | 'head-only';
+  framing?: CameraFraming;
 
   resizeQueue: ResizeItem[];
   selectedResizeId: string | null;

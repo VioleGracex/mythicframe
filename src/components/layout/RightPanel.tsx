@@ -4,12 +4,13 @@ import {
   UIMode, BackgroundConfig, PixelDimensions,
   BackgroundPatternType, AspectRatio, ImageSize, SafeZoneConfig, CharacterToolState, ArtStyle,
   MapGridConfig,
-  Viewpoint, ChibiConfig, AvailableModel, GenerationModel, AIProvider
+  Viewpoint, ChibiConfig, AvailableModel, GenerationModel, AIProvider, CameraFraming
 } from '../../types';
 import { getActiveAIProvider, setActiveAIProvider } from '../../services/aiProviderService';
 import { getPollinationsModel, setPollinationsModel, POLLINATIONS_MODELS } from '../../services/pollinationsService';
 import { getBEIConfig, setBEIConfig } from '../../services/beiService';
 import { ART_STYLES, BACKGROUND_PATTERNS, VIEWPOINTS } from '../../constants';
+import { SHOT_DISTANCE_PRESETS, normalizeFramingId, getShotDistancePreset } from '../../constants/framing';
 import MapGridPanel from './MapGridPanel';
 import UnityInput from '../ui/UnityInput';
 import { useLanguage } from '../../i18n/LanguageContext';
@@ -62,8 +63,8 @@ interface RightPanelProps {
   setNoCharacters?: (val: boolean) => void;
   seed?: number | null;
   setSeed?: (val: number | null) => void;
-  framing?: 'full-body' | 'waist-up' | 'bust' | 'head-only';
-  setFraming?: (val: 'full-body' | 'waist-up' | 'bust' | 'head-only') => void;
+  framing?: CameraFraming;
+  setFraming?: (val: CameraFraming) => void;
   usageMap?: Record<string, number>;
   handleGenerateBatch?: () => void;
   handleCancel?: () => void;
@@ -667,17 +668,26 @@ const RightPanel: React.FC<RightPanelProps> = (props) => {
                         <textarea value={characterTool.poseDescription} onChange={e => setCharacterTool(p => ({...p, poseDescription: e.target.value}))} className="w-full bg-[#0b1120] border border-slate-800 rounded p-4 text-sm text-slate-100 h-24 resize-none outline-none focus:border-purple-500 transition-colors font-medium leading-relaxed" placeholder="e.g. Dynamic action pose..." />
                         
                         <div className="space-y-1.5">
-                           <label className="text-[9px] font-bold text-slate-500 uppercase">Camera Framing</label>
+                           <div className="flex items-center justify-between">
+                              <label className="text-[9px] font-bold text-slate-500 uppercase">Camera Framing</label>
+                              <span className="text-[9px] font-semibold text-purple-400 font-mono">
+                                 {getShotDistancePreset(framing)?.code || 'FS'}
+                              </span>
+                           </div>
                            <select 
-                              value={framing || 'full-body'}
+                              value={normalizeFramingId(framing) || 'full_shot'}
                               onChange={(e) => setFraming && setFraming(e.target.value as any)}
-                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-2 text-[11px] text-slate-200 outline-none focus:border-purple-500"
+                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-2 text-[11px] text-slate-200 outline-none focus:border-purple-500 transition-colors cursor-pointer"
                            >
-                              <option value="full-body">Full Body (Head to Toe)</option>
-                              <option value="waist-up">Waist Up (Medium Shot)</option>
-                              <option value="bust">Bust (Chest Up)</option>
-                              <option value="head-only">Headshot (Close Up)</option>
+                              {SHOT_DISTANCE_PRESETS.map(preset => (
+                                 <option key={preset.id} value={preset.id}>
+                                    {preset.label}
+                                 </option>
+                              ))}
                            </select>
+                           <p className="text-[10px] text-slate-400 leading-tight italic px-0.5">
+                              {getShotDistancePreset(framing)?.description || 'Entire character from head to feet, filling most of the vertical frame.'}
+                           </p>
                         </div>
 
                         <div className="grid grid-cols-2 gap-2">

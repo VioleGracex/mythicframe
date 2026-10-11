@@ -14,28 +14,94 @@ import {
   MapGridConfig,
   UIMode,
   SpriteStripConfig,
-  CharacterToolState
+  CharacterToolState,
+  CameraFraming
 } from "../types.js";
 import { CHIBI_STYLE_CONFIG } from "../constants/gacha.js";
 import { DEFAULT_BACKGROUND_CONFIG } from "../constants/backgrounds.js";
+import { normalizeFramingId } from "../constants/framing.js";
+
+/**
+ * Returns the exact framing prompt override for any of the 13 shot-distance presets
+ */
+export const getShotDistanceFramingDirective = (framing: CameraFraming | string): string => {
+  const norm = normalizeFramingId(framing);
+  switch (norm) {
+    case 'extreme_close_up':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: EXTREME CLOSE-UP (ECU). Extreme close-up shot: Focus intensely on a tiny facial detail, such as an eye, lips, or another specific feature. The detail fills the entire frame. No full face or body visible. This framing directive supersedes all others.\n`;
+    case 'big_close_up':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: BIG CLOSE-UP (BCU). Big close-up shot: Crop tightly to the character's entire face, from forehead to chin, with very little surrounding space. The face completely dominates the frame. No shoulders or torso visible. This framing directive supersedes all others.\n`;
+    case 'close_up':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: CLOSE-UP (CU). Close-up portrait: Character's head and face dominate the image; shoulders may be partially visible. Top of hair may touch the top frame edge. No lower torso or legs. This framing directive supersedes all others.\n`;
+    case 'medium_close_up':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: MEDIUM CLOSE-UP (MCU). Medium close-up portrait: Head and shoulders shot, typically cropped around the upper chest. Focus is on facial expressions and shoulder attire. This framing directive supersedes all others.\n`;
+    case 'bust_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: BUST SHOT (BUST). Bust shot: Head, shoulders, and upper torso, usually ending around the chest. Arms cropped at mid-bicep. Lower torso, waist, and legs must NOT be visible. This framing directive supersedes all others.\n`;
+    case 'medium_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: MEDIUM SHOT (MS). Medium shot / Waist-up portrait: Crop strictly from head to waist. Hands and waist-level props can be visible. Legs, knees, and feet must NOT be visible under any circumstance. Upper body fills 60-80% of the vertical frame. This framing directive supersedes all others.\n`;
+    case 'medium_long_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: MEDIUM-LONG SHOT (MLS). Medium-long shot: Crop from head to mid-thigh. Shows more clothing, posture, and body language while retaining facial clarity. Knees and feet are cropped out. This framing directive supersedes all others.\n`;
+    case 'three_quarter_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: THREE-QUARTER SHOT (3/4). Three-quarter shot: Crop from head to knees or lower legs. Shows almost the full body including posture and weapons, with feet cropped off. This framing directive supersedes all others.\n`;
+    case 'american_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: AMERICAN SHOT (AS). American shot (Cowboy shot): Crop from head to mid-thigh, traditionally composed to clearly feature holstered weapons, belts, and confident posture. This framing directive supersedes all others.\n`;
+    case 'full_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: FULL SHOT (FS). Full shot / Head-to-toe: The entire character from the top of the head to the bottom of the feet MUST be fully visible, filling most of the vertical frame. Do NOT cut off feet or head. This framing directive supersedes all others.\n`;
+    case 'long_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: LONG SHOT (LS). Long shot: The entire character appears smaller in the frame with generous surrounding space and visible environment around them. Full body visible from head to toe. This framing directive supersedes all others.\n`;
+    case 'extreme_long_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: EXTREME LONG SHOT (ELS). Extreme long shot: Character occupies a small part of the image; the vast surrounding environment dominates the composition. Character is small but recognizable. This framing directive supersedes all others.\n`;
+    case 'very_wide_shot':
+      return `\n[CRITICAL OVERRIDE - FRAMING]: VERY WIDE SHOT (VWS). Very wide shot: Character is shown at a distance within a broad, expansive setting; used for establishing vast scale and environmental grandeur. This framing directive supersedes all others.\n`;
+    default:
+      return `\n[CRITICAL OVERRIDE - FRAMING]: FULL SHOT (FS). You MUST show the entire character from head to toe. This instruction supersedes any other framing instructions.\n`;
+  }
+};
 
 /**
  * Helper to detect explicit camera framing keywords directly from the prompt text
  */
-export const detectPromptFraming = (prompt: string): 'head-only' | 'bust' | 'waist-up' | 'full-body' | null => {
+export const detectPromptFraming = (prompt: string): CameraFraming | null => {
   if (!prompt) return null;
   const p = prompt.toLowerCase();
-  if (/(close[\s-]?up|headshot|head[\s-]?shot|portrait|profile pic|profile picture|avatar|face\b)/i.test(p)) {
-    return 'head-only';
+  if (/(extreme close[\s-]?up|\becu\b|macro face|eye close[\s-]?up|lips close[\s-]?up)/i.test(p)) {
+    return 'extreme_close_up';
   }
-  if (/(bust[\s-]?shot|chest[\s-]?up|upper torso)/i.test(p)) {
-    return 'bust';
+  if (/(big close[\s-]?up|\bbcu\b|full face close[\s-]?up)/i.test(p)) {
+    return 'big_close_up';
   }
-  if (/(waist[\s-]?up|medium shot|half[\s-]?body)/i.test(p)) {
-    return 'waist-up';
+  if (/(medium close[\s-]?up|\bmcu\b)/i.test(p)) {
+    return 'medium_close_up';
   }
-  if (/(full[\s-]?body|head to toe|entire character)/i.test(p)) {
-    return 'full-body';
+  if (/(close[\s-]?up|\bcu\b|headshot|head[\s-]?shot|portrait|profile pic|profile picture|avatar|face\b)/i.test(p)) {
+    return 'close_up';
+  }
+  if (/(bust[\s-]?shot|\bbust\b|chest[\s-]?up|upper torso)/i.test(p)) {
+    return 'bust_shot';
+  }
+  if (/(medium[\s-]?long[\s-]?shot|\bmls\b|mid[\s-]?thigh shot)/i.test(p)) {
+    return 'medium_long_shot';
+  }
+  if (/(three[\s-]?quarter[\s-]?shot|\b3\/4\b|knee[\s-]?up)/i.test(p)) {
+    return 'three_quarter_shot';
+  }
+  if (/(american[\s-]?shot|\bas\b|cowboy[\s-]?shot)/i.test(p)) {
+    return 'american_shot';
+  }
+  if (/(waist[\s-]?up|medium shot|\bms\b|half[\s-]?body)/i.test(p)) {
+    return 'medium_shot';
+  }
+  if (/(extreme long[\s-]?shot|\bels\b)/i.test(p)) {
+    return 'extreme_long_shot';
+  }
+  if (/(very wide[\s-]?shot|\bvws\b|establishing scale)/i.test(p)) {
+    return 'very_wide_shot';
+  }
+  if (/(long[\s-]?shot|\bls\b|wide shot)/i.test(p)) {
+    return 'long_shot';
+  }
+  if (/(full[\s-]?body|full[\s-]?shot|\bfs\b|head to toe|entire character)/i.test(p)) {
+    return 'full_shot';
   }
   return null;
 };
@@ -206,21 +272,7 @@ export const buildClothesPrompt = (
     }
 
     if (clothesParams.framing) {
-      switch (clothesParams.framing) {
-        case 'waist-up':
-          fullPrompt += `\n[CRITICAL OVERRIDE - FRAMING]: WAIST-UP SHOT. Waist-up portrait: the frame MUST cut at the waist. The character is cropped at the hips. Legs, knees, and feet must NOT be visible under any circumstance. Waist-up character portrait for dialogue UI. STRICT framing rules: Crop exactly at the waist (hips level). No legs, knees, or feet visible. Upper body fills most of the frame (60-80%). Head and torso are the focus. Composition: Centered or slightly offset character. Clear silhouette for UI readability. DO NOT: Do not generate full body, Do not zoom out to include legs, Do not keep original full-body proportions.\n`;
-          break;
-        case 'bust':
-          fullPrompt += `\n[CRITICAL OVERRIDE - FRAMING]: BUST SHOT. You MUST crop the character from the chest up. Focus on the upper torso, shoulders, and head. It is acceptable if the top of the head or sides of the shoulders are cut off to ensure a true close-up. Do NOT zoom out to fit everything. This instruction supersedes any other framing instructions.\n`;
-          break;
-        case 'head-only':
-          fullPrompt += `\n[CRITICAL OVERRIDE - FRAMING]: HEAD ONLY. You MUST focus entirely on the head, face, and neck. The head should fill most of the frame. It is expected that the top of the hair or sides of the head might be cut off by the frame. Do NOT show the torso or arms. This instruction supersedes any other framing instructions.\n`;
-          break;
-        case 'full-body':
-        default:
-          fullPrompt += `\n[CRITICAL OVERRIDE - FRAMING]: FULL BODY SHOT. You MUST show the entire character from head to toe. This instruction supersedes any other framing instructions.\n`;
-          break;
-      }
+      fullPrompt += getShotDistanceFramingDirective(clothesParams.framing);
     }
   }
 
@@ -335,7 +387,7 @@ export const buildIllustrationPrompt = (
   chibiConfig?: ChibiConfig,
   viewpoint?: string,
   noCharacters?: boolean,
-  framing?: 'full-body' | 'waist-up' | 'bust' | 'head-only',
+  framing?: CameraFraming,
   characterTool?: CharacterToolState
 ): { textPrompt: string; referenceParts: { text?: string }[] } => {
   let fullPrompt = "";
@@ -373,13 +425,13 @@ export const buildIllustrationPrompt = (
   }
 
   const detectedFraming = detectPromptFraming(basePrompt);
-  let effectiveFraming: 'full-body' | 'waist-up' | 'bust' | 'head-only' | null = null;
+  let effectiveFraming: CameraFraming | null = null;
 
   if (characterTool?.enabled) {
-    effectiveFraming = framing || detectedFraming || 'full-body';
+    effectiveFraming = framing || detectedFraming || 'full_shot';
   } else if (detectedFraming) {
     effectiveFraming = detectedFraming;
-  } else if (framing && framing !== 'full-body') {
+  } else if (framing && framing !== 'full_shot' && framing !== 'full-body') {
     effectiveFraming = framing;
   }
 
@@ -393,21 +445,7 @@ export const buildIllustrationPrompt = (
   }
 
   if (effectiveFraming && characterLikely) {
-    switch (effectiveFraming) {
-      case 'waist-up':
-        fullPrompt += `\n[CRITICAL OVERRIDE - FRAMING]: WAIST-UP SHOT. Waist-up portrait: the frame MUST cut at the waist. The character is cropped at the hips. Legs, knees, and feet must NOT be visible under any circumstance. Waist-up character portrait for dialogue UI. STRICT framing rules: Crop exactly at the waist (hips level). No legs, knees, or feet visible. Upper body fills most of the frame (60-80%). Head and torso are the focus. Composition: Centered or slightly offset character. Clear silhouette for UI readability. DO NOT: Do not generate full body, Do not zoom out to include legs, Do not keep original full-body proportions.\n`;
-        break;
-      case 'bust':
-        fullPrompt += `\n[CRITICAL OVERRIDE - FRAMING]: BUST SHOT. You MUST crop the character from the chest up. Focus on the upper torso, shoulders, and head. It is acceptable if the top of the head or sides of the shoulders are cut off to ensure a true close-up. Do NOT zoom out to fit everything. This instruction supersedes any other framing instructions.\n`;
-        break;
-      case 'head-only':
-        fullPrompt += `\n[CRITICAL OVERRIDE - FRAMING]: HEADSHOT / CLOSE-UP. You MUST focus entirely on the character's head and face. The head should fill most of the frame. It is expected that the top of the hair or sides of the head might be cut off by the frame. Do NOT show the torso or lower body. This instruction supersedes any other framing instructions.\n`;
-        break;
-      case 'full-body':
-      default:
-        fullPrompt += `\n[CRITICAL OVERRIDE - FRAMING]: FULL-BODY SHOT. You MUST show the entire character from head to toe. This instruction supersedes any other framing instructions.\n`;
-        break;
-    }
+    fullPrompt += getShotDistanceFramingDirective(effectiveFraming);
   }
 
   fullPrompt += `[STRICT NEGATIVE CONSTRAINT]: NO TEXT. NO labels. NO watermarks. NO signatures. NO UI elements. NO speech bubbles. The image MUST be pure artwork.\n`;

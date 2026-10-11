@@ -144,7 +144,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             aspectRatio: { type: "string", description: "'1:1', '16:9', '9:16', '3:4', or '4:3'" },
             style: { type: "string", description: "Art style snippet or style ID (e.g. 'arknights_tactical', 'pixel_art')" },
             viewpoint: { type: "string", description: "Camera viewpoint: 'front', 'back', 'side', 'three-quarter', 'top-down', 'high-angle', 'low-angle', 'isometric', or 'cinematic'" },
-            framing: { type: "string", description: "Shot framing: 'full-body', 'waist-up', 'bust', or 'head-only'" },
+            framing: { type: "string", description: "Shot distance framing: 'extreme_close_up' (ECU), 'big_close_up' (BCU), 'close_up' (CU), 'medium_close_up' (MCU), 'bust_shot' (BUST), 'medium_shot' (MS), 'medium_long_shot' (MLS), 'three_quarter_shot' (3/4), 'american_shot' (AS), 'full_shot' (FS), 'long_shot' (LS), 'extreme_long_shot' (ELS), or 'very_wide_shot' (VWS)" },
             characterPose: { type: "string", description: "Character pose/action description (e.g. 'standing heroic with sword raised', 'sitting relaxed on throne')" },
             lookTarget: { type: "string", description: "Direction subject is looking: 'at camera / direct gaze', 'looking away', 'looking up', 'looking down'" },
             expression: { type: "string", description: "Facial expression: 'stoic', 'gentle smile', 'fierce grin', 'mysterious smirk', 'angry'" },
@@ -187,7 +187,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             renderMode: { type: "string", enum: ["character", "asset"], description: "'asset' enables Biological Eraser (erases all body/skin/face, rendering hollow 3D ghost clothes). 'character' renders worn on character." },
             lockPose: { type: "boolean", description: "Strictly preserve reference anatomy and body posture" },
             layout: { type: "string", enum: ["single", "spread"], description: "'single' view or 'spread' (multi-view orthographic fashion design sheet)" },
-            framing: { type: "string", enum: ["full-body", "waist-up", "bust", "head-only"] }
+            framing: { type: "string", enum: ["extreme_close_up", "big_close_up", "close_up", "medium_close_up", "bust_shot", "medium_shot", "medium_long_shot", "three_quarter_shot", "american_shot", "full_shot", "long_shot", "extreme_long_shot", "very_wide_shot", "full-body", "waist-up", "bust", "head-only"], description: "Shot distance preset (ordered ECU to VWS) or legacy framing" }
           },
           required: ["prompt"],
         },
