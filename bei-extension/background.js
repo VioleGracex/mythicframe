@@ -619,67 +619,115 @@ let beiDedicatedWindowId = null;
 /**
  * Organizes BEI tabs into a single dedicated Chrome Tab Group ("MythicFrame BEI")
  * Supports same window group, dedicated new window, and foreground/background focus.
+ * Strictly deduplicates: reuses existing "MythicFrame BEI" tab group across all windows.
  */
 async function organizeTabIntoBEIGroup(tabId, tabMode = 'new_window_group', bringTabToFront = false) {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (!tab) return;
 
-    if (tabMode === 'new_window_group') {
-      let winExists = false;
-      if (beiDedicatedWindowId) {
-        try {
-          const win = await chrome.windows.get(beiDedicatedWindowId);
-          if (win) winExists = true;
-        } catch (e) {
-          beiDedicatedWindowId = null;
-        }
-      }
-
-      if (!winExists) {
-        const newWin = await chrome.windows.create({
-          tabId: tab.id,
-          focused: Boolean(bringTabToFront)
-        });
-        beiDedicatedWindowId = newWin.id;
-        if (chrome.tabGroups) {
-          try {
-            const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
-            await chrome.tabGroups.update(groupId, { title: "MythicFrame BEI", color: "purple" });
-          } catch (e) {}
-        }
-        return;
-      } else if (tab.windowId !== beiDedicatedWindowId) {
-        await chrome.tabs.move(tab.id, { windowId: beiDedicatedWindowId, index: -1 });
-      }
-
-      if (chrome.tabGroups) {
-        try {
-          const groups = await chrome.tabGroups.query({ windowId: beiDedicatedWindowId, title: "MythicFrame BEI" });
-          if (groups && groups.length > 0) {
-            await chrome.tabs.group({ tabIds: [tab.id], groupId: groups[0].id });
-          } else {
-            const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
-            await chrome.tabGroups.update(groupId, { title: "MythicFrame BEI", color: "purple" });
-          }
-        } catch (e) {}
-      }
-    } else if (tabMode === 'same_window_group' && chrome.tabGroups) {
+    // 1. If tab is ALREADY inside an existing "MythicFrame BEI" group, avoid redundant operations
+    if (chrome.tabGroups && tab.groupId && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
       try {
-        const groups = await chrome.tabGroups.query({ windowId: tab.windowId, title: "MythicFrame BEI" });
-        if (groups && groups.length > 0) {
-          await chrome.tabs.group({ tabIds: [tab.id], groupId: groups[0].id });
-        } else {
-          const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
-          await chrome.tabGroups.update(groupId, { title: "MythicFrame BEI", color: "purple" });
+        const currentGroup = await chrome.tabGroups.get(tab.groupId);
+        if (currentGroup && currentGroup.title === "MythicFrame BEI") {
+          beiDedicatedWindowId = tab.windowId;
+          if (bringTabToFront) {
+            await chrome.tabs.update(tab.id, { active: true });
+            if (tab.windowId) {
+              await chrome.windows.update(tab.windowId, { focused: true });
+            }
+          }
+          return;
         }
       } catch (e) {}
     }
 
+    // 2. Discover any existing "MythicFrame BEI" tab groups globally across all windows
+    let existingGroup = null;
+    if (chrome.tabGroups) {
+      try {
+        const allGroups = await chrome.tabGroups.query({ title: "MythicFrame BEI" });
+        if (allGroups && allGroups.length > 0) {
+          existingGroup = allGroups[0];
+          beiDedicatedWindowId = existingGroup.windowId;
+
+          // Consolidate any duplicate groups created by previous sessions/bugs into the primary group
+          if (allGroups.length > 1) {
+            for (let i = 1; i < allGroups.length; i++) {
+              const dupGroup = allGroups[i];
+              try {
+                const dupTabs = await chrome.tabs.query({ groupId: dupGroup.id });
+                if (dupTabs && dupTabs.length > 0) {
+                  const tabIdsToMove = dupTabs.map(t => t.id);
+                  if (dupGroup.windowId !== existingGroup.windowId) {
+                    await chrome.tabs.move(tabIdsToMove, { windowId: existingGroup.windowId, index: -1 });
+                  }
+                  await chrome.tabs.group({ tabIds: tabIdsToMove, groupId: existingGroup.id });
+                }
+              } catch (e) {}
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 3. If an existing "MythicFrame BEI" group exists, route this tab into it
+    if (existingGroup) {
+      if (tab.windowId !== existingGroup.windowId) {
+        await chrome.tabs.move(tab.id, { windowId: existingGroup.windowId, index: -1 });
+      }
+      await chrome.tabs.group({ tabIds: [tab.id], groupId: existingGroup.id });
+    } else {
+      // 4. No "MythicFrame BEI" group exists anywhere yet. Create one now.
+      if (tabMode === 'new_window_group') {
+        let winExists = false;
+        if (beiDedicatedWindowId) {
+          try {
+            const win = await chrome.windows.get(beiDedicatedWindowId);
+            if (win) winExists = true;
+          } catch (e) {
+            beiDedicatedWindowId = null;
+          }
+        }
+
+        if (!winExists) {
+          const newWin = await chrome.windows.create({
+            tabId: tab.id,
+            focused: Boolean(bringTabToFront)
+          });
+          beiDedicatedWindowId = newWin.id;
+          if (chrome.tabGroups) {
+            try {
+              const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
+              await chrome.tabGroups.update(groupId, { title: "MythicFrame BEI", color: "purple" });
+            } catch (e) {}
+          }
+        } else {
+          if (tab.windowId !== beiDedicatedWindowId) {
+            await chrome.tabs.move(tab.id, { windowId: beiDedicatedWindowId, index: -1 });
+          }
+          if (chrome.tabGroups) {
+            try {
+              const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
+              await chrome.tabGroups.update(groupId, { title: "MythicFrame BEI", color: "purple" });
+            } catch (e) {}
+          }
+        }
+      } else if (chrome.tabGroups) {
+        // same_window_group or default mode: group tab in current window
+        try {
+          const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
+          await chrome.tabGroups.update(groupId, { title: "MythicFrame BEI", color: "purple" });
+        } catch (e) {}
+      }
+    }
+
     if (bringTabToFront) {
       await chrome.tabs.update(tab.id, { active: true });
-      if (tab.windowId) {
-        await chrome.windows.update(tab.windowId, { focused: true });
+      const targetWinId = existingGroup ? existingGroup.windowId : (beiDedicatedWindowId || tab.windowId);
+      if (targetWinId) {
+        await chrome.windows.update(targetWinId, { focused: true });
       }
     }
   } catch (err) {
@@ -787,10 +835,12 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
     const allTabs = await chrome.tabs.query({});
     let beiGroupTabIds = new Set();
 
+    let primaryBeiWindowId = null;
     if (chrome.tabGroups) {
       try {
         const groups = await chrome.tabGroups.query({ title: "MythicFrame BEI" });
         if (groups && groups.length > 0) {
+          primaryBeiWindowId = groups[0].windowId;
           const groupIds = new Set(groups.map(g => g.id));
           allTabs.filter(t => groupIds.has(t.groupId)).forEach(t => beiGroupTabIds.add(t.id));
         }
@@ -860,10 +910,14 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
 
       // 3. Open a single new tab only when none exists
       console.log(`[MythicFrame BEI Worker] Opening single tab for Gemini slot ${targetSlot} (Mode: ${tabMode}, Focus: ${bringTabToFront})...`);
-      const newTab = await chrome.tabs.create({
+      const newTabProps = {
         url: `https://gemini.google.com/u/${targetSlot}/app`,
         active: true
-      });
+      };
+      if (primaryBeiWindowId) {
+        newTabProps.windowId = primaryBeiWindowId;
+      }
+      const newTab = await chrome.tabs.create(newTabProps);
       // Organize into BEI group IMMEDIATELY upon creation
       await organizeTabIntoBEIGroup(newTab.id, tabMode, bringTabToFront);
       await waitForTabReady(newTab.id, 15000);
@@ -911,10 +965,14 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       }
 
       console.log(`[MythicFrame BEI Worker] Opening single tab for ChatGPT (Mode: ${tabMode}, Focus: ${bringTabToFront})...`);
-      const newTab = await chrome.tabs.create({
+      const newChatTabProps = {
         url: "https://chatgpt.com/",
         active: Boolean(bringTabToFront)
-      });
+      };
+      if (primaryBeiWindowId) {
+        newChatTabProps.windowId = primaryBeiWindowId;
+      }
+      const newTab = await chrome.tabs.create(newChatTabProps);
       // Organize into BEI group IMMEDIATELY upon creation
       await organizeTabIntoBEIGroup(newTab.id, tabMode, bringTabToFront);
       await waitForTabReady(newTab.id, 15000);
