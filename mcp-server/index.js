@@ -1357,6 +1357,39 @@ async function fetchBEILibraryAssets(target = "gemini", accountSlot = 0, limit =
     return { success: false, message: `Could not reach BEI Bridge: ${err.message}` };
   }
 }
+async function saveLibraryAssetToFile(assetUrl, prefix = "library") {
+  try {
+    const outDir = path.join(PROJECT_ROOT, "outputs", "bei");
+    if (!fs.existsSync(outDir)) {
+      fs.mkdirSync(outDir, { recursive: true });
+    }
+    let buffer;
+    let extension = "jpg";
+    if (assetUrl.startsWith("data:image/")) {
+      const isPng = assetUrl.startsWith("data:image/png");
+      extension = isPng ? "png" : "jpg";
+      const base64Data = assetUrl.replace(/^data:image\/\w+;base64,/, "");
+      buffer = Buffer.from(base64Data, "base64");
+    } else {
+      const res = await fetch(assetUrl, { signal: AbortSignal.timeout(2e4) });
+      if (!res.ok) return null;
+      const arrBuf = await res.arrayBuffer();
+      buffer = Buffer.from(arrBuf);
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("png")) extension = "png";
+      else if (ct.includes("webp")) extension = "webp";
+    }
+    const fileName = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
+    const filePath = path.join(outDir, fileName);
+    fs.writeFileSync(filePath, buffer);
+    const sizeMB = `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`;
+    const base64 = `data:image/${extension === "png" ? "png" : "jpeg"};base64,${buffer.toString("base64")}`;
+    return { filePath, sizeMB, base64 };
+  } catch (err) {
+    console.warn("[MythicFrame BEI] Failed to save library asset to file:", err);
+    return null;
+  }
+}
 async function getMythicSettings() {
   try {
     const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/status`, {
@@ -1420,18 +1453,58 @@ async function generateWithBEI(options) {
     dispatchMode,
     chatSessionMode
   };
-  const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(errorData.message || `BEI generation failed with status ${response.status}`);
+  let result = null;
+  let chatError = null;
+  try {
+    const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: response.statusText }));
+      throw new Error(errorData.message || `BEI generation failed with status ${response.status}`);
+    }
+    result = await response.json();
+    if (!result.success || !result.image) {
+      throw new Error(result.error || "BEI bridge did not return a valid image.");
+    }
+  } catch (err) {
+    chatError = err;
+    console.warn(`[MythicFrame BEI] Chat generation did not catch image: ${err.message}. Initiating Automated Library Failover Protocol...`);
   }
-  const result = await response.json();
-  if (!result.success || !result.image) {
-    throw new Error(result.error || "BEI bridge did not return a valid image.");
+  if (!result || !result.image) {
+    if (target === "gemini") {
+      try {
+        console.log(`[MythicFrame BEI] Querying Google Gemini Library (Slot ${accountSlot}) for recent generation fallback...`);
+        const libRes = await fetchBEILibraryAssets("gemini", accountSlot, 6);
+        if (libRes.success && Array.isArray(libRes.assets) && libRes.assets.length > 0) {
+          const latestAsset = libRes.assets[0];
+          const assetUrl = latestAsset.highResUrl || latestAsset.src;
+          if (assetUrl) {
+            console.log(`[MythicFrame BEI] Automatically recovered image from Google Gemini Library: ${assetUrl}`);
+            const saved = await saveLibraryAssetToFile(assetUrl, "bei_library_failover");
+            if (saved) {
+              return {
+                success: true,
+                filePath: saved.filePath,
+                imageBase64: saved.base64,
+                jobId: `recovered_lib_${Date.now()}`,
+                metadata: {
+                  recoveredFromLibrary: true,
+                  sourceUrl: assetUrl,
+                  alt: latestAsset.alt || "",
+                  originalError: chatError ? chatError.message : "Chat timeout"
+                }
+              };
+            }
+          }
+        }
+      } catch (failoverErr) {
+        console.warn(`[MythicFrame BEI] Library failover encountered error: ${failoverErr.message}`);
+      }
+    }
+    throw new Error(chatError ? chatError.message : "BEI generation failed and Library failover could not recover any generated assets.");
   }
   const outDir = path.join(PROJECT_ROOT, "outputs", "bei");
   if (!fs.existsSync(outDir)) {
@@ -1808,13 +1881,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "mythic_fetch_library_assets",
-        description: "Fetches generated image assets from Google Gemini Web Library (/library). Useful when DOM chat extraction fails or to retrieve past generated images.",
+        description: "Fetches generated image assets from Google Gemini Web Library (/library). Supports keyword searching and auto-downloading assets to local disk. Useful when DOM chat extraction fails or to retrieve past generated images.",
         inputSchema: {
           type: "object",
           properties: {
             target: { type: "string", enum: ["gemini"], description: "Target AI service (default 'gemini')" },
             accountSlot: { type: "number", description: "Google account slot index (default 0)" },
-            limit: { type: "number", description: "Number of assets to retrieve (default 5)" }
+            limit: { type: "number", description: "Number of assets to retrieve (default 5)" },
+            searchQuery: { type: "string", description: "Optional search query or keywords to filter library assets by prompt/alt text" },
+            downloadLatest: { type: "boolean", description: "If true, automatically downloads the first/matching library image to disk (outputs/bei/) and returns a clickable local file link" }
           },
           required: []
         }
@@ -2100,14 +2175,38 @@ Summary: ${status.summary}`;
       const target = args.target || "gemini";
       const slot = args.accountSlot ?? 0;
       const limit = args.limit ?? 5;
-      const res = await fetchBEILibraryAssets(target, slot, limit);
+      const res = await fetchBEILibraryAssets(target, slot, Math.max(limit, 10));
       if (!res.success) {
         return { content: [{ type: "text", text: `Failed to fetch library assets: ${res.message}` }], isError: true };
       }
-      let text = `Found ${(res.assets || []).length} assets in Google Gemini Library (Slot ${slot}):
+      let assets = res.assets || [];
+      if (args.searchQuery) {
+        const q = String(args.searchQuery).toLowerCase();
+        assets = assets.filter((a) => (a.alt || "").toLowerCase().includes(q) || (a.src || "").toLowerCase().includes(q));
+      }
+      assets = assets.slice(0, limit);
+      if (assets.length === 0) {
+        return { content: [{ type: "text", text: `No matching image assets found in Google Gemini Library (Slot ${slot}${args.searchQuery ? `, query: "${args.searchQuery}"` : ""}).` }] };
+      }
+      let downloadSection = "";
+      if (args.downloadLatest && assets.length > 0) {
+        const topAsset = assets[0];
+        const topUrl = topAsset.highResUrl || topAsset.src;
+        const saved = await saveLibraryAssetToFile(topUrl, "library_export");
+        if (saved) {
+          const formattedPath = saved.filePath.replace(/\\/g, "/");
+          const fileName = path2.basename(saved.filePath);
+          downloadSection = `DOWNLOADED TO DISK:
+- Local file: ${saved.filePath} (${saved.sizeMB})
+- Markdown link: [${fileName}](file:///${formattedPath})
 
 `;
-      (res.assets || []).forEach((a, idx) => {
+        }
+      }
+      let text = `Found ${assets.length} assets in Google Gemini Library (Slot ${slot}):
+
+${downloadSection}`;
+      assets.forEach((a, idx) => {
         text += `${idx + 1}. High-Res URL: ${a.highResUrl || a.src}
    Alt: ${a.alt || "Generated image"}
 
@@ -2139,11 +2238,14 @@ Summary: ${status.summary}`;
         sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
       } catch (e) {
       }
+      const recoveryNotice = beiRes.metadata?.recoveredFromLibrary ? `
+
+AUTOMATIC FAILOVER NOTICE: The browser chat DOM timed out or missed the image stream, but the generated artwork was AUTOMATICALLY RECOVERED from your Google Gemini Library!
+` : "";
       return {
         content: [{
           type: "text",
-          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!
-
+          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!${recoveryNotice}
 Image saved to: ${beiRes.filePath}${sizeMB}
 Job ID: ${beiRes.jobId}
 Quality: ${args.quality || "ultra_original"}

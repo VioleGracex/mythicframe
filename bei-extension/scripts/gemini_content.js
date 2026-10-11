@@ -1341,6 +1341,7 @@
     } catch (e) {}
 
     reportProgress(jobId, 'connecting', 'Connecting to Gemini Web composer...');
+    const initialConversationId = protocol.extractConversationId ? protocol.extractConversationId(window.location.href) : null;
 
     // Wait up to 30 seconds for the composer element to become available in SPA DOM
     let composer = getComposerElement();
@@ -1621,7 +1622,12 @@
               candidates,
               retrievalMethod,
               imageFormat: isBase64 ? 'base64' : 'url',
-              imageSize: finalData.length
+              imageSize: finalData.length,
+              conversationId: (protocol.extractConversationId ? protocol.extractConversationId(window.location.href) : null) || initialConversationId || null,
+              messageId: (typeof imgOrUrl !== 'string' && imgOrUrl.closest)
+                ? (imgOrUrl.closest('conversation-turn, model-response, [data-message-id]')?.getAttribute('data-message-id') || null)
+                : null,
+              chatUrl: window.location.href
             }
           }
         });
@@ -1673,6 +1679,38 @@
             return;
           }
 
+          // --- PRE-TIMEOUT CONVERSATION & MESSAGE DEEP SWEEP ---
+          const finalConvId = (protocol.extractConversationId ? protocol.extractConversationId(window.location.href) : null) || initialConversationId;
+          const allTurns = Array.from(document.querySelectorAll('conversation-turn, model-response, [data-test-id*="model-response"]'))
+            .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
+
+          // Inspect latest turn or turns created since baseline
+          const candidateTurns = allTurns.slice(baselineResponseCount > 0 ? baselineResponseCount - 1 : 0);
+          for (const turn of candidateTurns.reverse()) {
+            const turnImgs = protocol.getAllImagesRecursively(turn);
+            for (const cImg of turnImgs) {
+              if (isUserAttachedImage(cImg)) continue;
+              const cSrc = cImg.currentSrc || cImg.src;
+              if (cSrc && (protocol.isGeneratedImage(cImg) || cSrc.includes('googleusercontent.com'))) {
+                console.log(`[MythicFrame BEI] Caught generated image during pre-timeout deep sweep (Conv ID: ${finalConvId})!`);
+                await deliverImage(cImg, cImg.naturalWidth || 1024, cImg.naturalHeight || 1024);
+                return;
+              }
+            }
+            const turnUrls = protocol.extractImageUrlsFromNode(turn);
+            if (turnUrls && turnUrls.length > 0) {
+              console.log(`[MythicFrame BEI] Caught generated image URL during pre-timeout deep sweep (Conv ID: ${finalConvId})!`);
+              await deliverImage(turnUrls[0]);
+              return;
+            }
+          }
+
+          let lastTurnMessageId = null;
+          if (candidateTurns.length > 0) {
+            const lastTurn = candidateTurns[0];
+            lastTurnMessageId = lastTurn.getAttribute('data-message-id') || lastTurn.getAttribute('data-turn-id') || lastTurn.getAttribute('data-response-id') || lastTurn.id || null;
+          }
+
           clearInterval(checkInterval);
           activeRunningJobId = null;
           activeCancelHandler = null;
@@ -1682,7 +1720,12 @@
           try {
             chrome.runtime.sendMessage({
               type: 'GENERATION_FAILED',
-              data: { jobId, error: `Generation timed out after ${timeoutSeconds}s waiting for Gemini Web response.` }
+              data: {
+                jobId,
+                error: `Generation timed out after ${timeoutSeconds}s waiting for Gemini Web response (Conversation ID: ${finalConvId || 'current'}, Message ID: ${lastTurnMessageId || 'none'}).`,
+                conversationId: finalConvId,
+                messageId: lastTurnMessageId
+              }
             });
           } catch (e) {}
           return;

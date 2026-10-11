@@ -42,7 +42,8 @@ import {
   generateWithBEI,
   getMythicSettings,
   setActiveBEITab,
-  fetchBEILibraryAssets
+  fetchBEILibraryAssets,
+  saveLibraryAssetToFile
 } from "./beiClient.js";
 
 // Helper to format output instructions for image generation
@@ -359,13 +360,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "mythic_fetch_library_assets",
-        description: "Fetches generated image assets from Google Gemini Web Library (/library). Useful when DOM chat extraction fails or to retrieve past generated images.",
+        description: "Fetches generated image assets from Google Gemini Web Library (/library). Supports keyword searching and auto-downloading assets to local disk. Useful when DOM chat extraction fails or to retrieve past generated images.",
         inputSchema: {
           type: "object",
           properties: {
             target: { type: "string", enum: ["gemini"], description: "Target AI service (default 'gemini')" },
             accountSlot: { type: "number", description: "Google account slot index (default 0)" },
-            limit: { type: "number", description: "Number of assets to retrieve (default 5)" }
+            limit: { type: "number", description: "Number of assets to retrieve (default 5)" },
+            searchQuery: { type: "string", description: "Optional search query or keywords to filter library assets by prompt/alt text" },
+            downloadLatest: { type: "boolean", description: "If true, automatically downloads the first/matching library image to disk (outputs/bei/) and returns a clickable local file link" }
           },
           required: []
         }
@@ -643,12 +646,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const target = args.target || 'gemini';
       const slot = args.accountSlot ?? 0;
       const limit = args.limit ?? 5;
-      const res = await fetchBEILibraryAssets(target, slot, limit);
+      const res = await fetchBEILibraryAssets(target, slot, Math.max(limit, 10));
       if (!res.success) {
         return { content: [{ type: "text", text: `Failed to fetch library assets: ${res.message}` }], isError: true };
       }
-      let text = `Found ${(res.assets || []).length} assets in Google Gemini Library (Slot ${slot}):\n\n`;
-      (res.assets || []).forEach((a: any, idx: number) => {
+
+      let assets = res.assets || [];
+      if (args.searchQuery) {
+        const q = String(args.searchQuery).toLowerCase();
+        assets = assets.filter((a: any) => (a.alt || '').toLowerCase().includes(q) || (a.src || '').toLowerCase().includes(q));
+      }
+      assets = assets.slice(0, limit);
+
+      if (assets.length === 0) {
+        return { content: [{ type: "text", text: `No matching image assets found in Google Gemini Library (Slot ${slot}${args.searchQuery ? `, query: "${args.searchQuery}"` : ''}).` }] };
+      }
+
+      let downloadSection = '';
+      if (args.downloadLatest && assets.length > 0) {
+        const topAsset = assets[0];
+        const topUrl = topAsset.highResUrl || topAsset.src;
+        const saved = await saveLibraryAssetToFile(topUrl, 'library_export');
+        if (saved) {
+          const formattedPath = saved.filePath.replace(/\\/g, '/');
+          const fileName = path.basename(saved.filePath);
+          downloadSection = `DOWNLOADED TO DISK:\n- Local file: ${saved.filePath} (${saved.sizeMB})\n- Markdown link: [${fileName}](file:///${formattedPath})\n\n`;
+        }
+      }
+
+      let text = `Found ${assets.length} assets in Google Gemini Library (Slot ${slot}):\n\n${downloadSection}`;
+      assets.forEach((a: any, idx: number) => {
         text += `${idx + 1}. High-Res URL: ${a.highResUrl || a.src}\n   Alt: ${a.alt || 'Generated image'}\n\n`;
       });
       return { content: [{ type: "text", text }] };
@@ -677,10 +704,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const stats = fs.statSync(beiRes.filePath);
         sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
       } catch (e) {}
+
+      const recoveryNotice = beiRes.metadata?.recoveredFromLibrary
+        ? `\n\nAUTOMATIC FAILOVER NOTICE: The browser chat DOM timed out or missed the image stream, but the generated artwork was AUTOMATICALLY RECOVERED from your Google Gemini Library!\n`
+        : '';
+
       return {
         content: [{
           type: "text",
-          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!\n\nImage saved to: ${beiRes.filePath}${sizeMB}\nJob ID: ${beiRes.jobId}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
+          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!${recoveryNotice}\nImage saved to: ${beiRes.filePath}${sizeMB}\nJob ID: ${beiRes.jobId}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
         }]
       };
     }

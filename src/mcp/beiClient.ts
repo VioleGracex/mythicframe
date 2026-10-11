@@ -343,6 +343,47 @@ export async function fetchBEILibraryAssets(target: 'gemini' = 'gemini', account
 }
 
 /**
+ * Downloads a library asset URL into outputs/bei/ and returns the local file path.
+ */
+export async function saveLibraryAssetToFile(assetUrl: string, prefix = 'library'): Promise<{ filePath: string; sizeMB: string; base64: string } | null> {
+  try {
+    const outDir = path.join(PROJECT_ROOT, 'outputs', 'bei');
+    if (!fs.existsSync(outDir)) {
+      fs.mkdirSync(outDir, { recursive: true });
+    }
+
+    let buffer: Buffer;
+    let extension = 'jpg';
+
+    if (assetUrl.startsWith('data:image/')) {
+      const isPng = assetUrl.startsWith('data:image/png');
+      extension = isPng ? 'png' : 'jpg';
+      const base64Data = assetUrl.replace(/^data:image\/\w+;base64,/, '');
+      buffer = Buffer.from(base64Data, 'base64');
+    } else {
+      const res = await fetch(assetUrl, { signal: AbortSignal.timeout(20000) });
+      if (!res.ok) return null;
+      const arrBuf = await res.arrayBuffer();
+      buffer = Buffer.from(arrBuf);
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('png')) extension = 'png';
+      else if (ct.includes('webp')) extension = 'webp';
+    }
+
+    const fileName = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
+    const filePath = path.join(outDir, fileName);
+    fs.writeFileSync(filePath, buffer);
+
+    const sizeMB = `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`;
+    const base64 = `data:image/${extension === 'png' ? 'png' : 'jpeg'};base64,${buffer.toString('base64')}`;
+    return { filePath, sizeMB, base64 };
+  } catch (err) {
+    console.warn('[MythicFrame BEI] Failed to save library asset to file:', err);
+    return null;
+  }
+}
+
+/**
  * Fetches all active settings, accounts, quotas, and preferences from MythicFrame.
  */
 export async function getMythicSettings(): Promise<any> {
@@ -416,20 +457,66 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     chatSessionMode
   };
 
-  const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  let result: any = null;
+  let chatError: any = null;
 
-  if (!response.ok) {
-    const errorData: any = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(errorData.message || `BEI generation failed with status ${response.status}`);
+  try {
+    const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorData: any = await response.json().catch(() => ({ message: response.statusText }));
+      throw new Error(errorData.message || `BEI generation failed with status ${response.status}`);
+    }
+
+    result = await response.json();
+    if (!result.success || !result.image) {
+      throw new Error(result.error || 'BEI bridge did not return a valid image.');
+    }
+  } catch (err: any) {
+    chatError = err;
+    console.warn(`[MythicFrame BEI] Chat generation did not catch image: ${err.message}. Initiating Automated Library Failover Protocol...`);
   }
 
-  const result: any = await response.json();
-  if (!result.success || !result.image) {
-    throw new Error(result.error || 'BEI bridge did not return a valid image.');
+  // --- AUTOMATED LIBRARY FAILOVER PROTOCOL ---
+  // If BEI chat generation timed out or failed to catch image in DOM,
+  // query the Gemini Library (/library) to see if the generated asset exists there!
+  if (!result || !result.image) {
+    if (target === 'gemini') {
+      try {
+        console.log(`[MythicFrame BEI] Querying Google Gemini Library (Slot ${accountSlot}) for recent generation fallback...`);
+        const libRes = await fetchBEILibraryAssets('gemini', accountSlot, 6);
+        if (libRes.success && Array.isArray(libRes.assets) && libRes.assets.length > 0) {
+          const latestAsset = libRes.assets[0];
+          const assetUrl = latestAsset.highResUrl || latestAsset.src;
+          if (assetUrl) {
+            console.log(`[MythicFrame BEI] Automatically recovered image from Google Gemini Library: ${assetUrl}`);
+            const saved = await saveLibraryAssetToFile(assetUrl, 'bei_library_failover');
+            if (saved) {
+              return {
+                success: true,
+                filePath: saved.filePath,
+                imageBase64: saved.base64,
+                jobId: `recovered_lib_${Date.now()}`,
+                metadata: {
+                  recoveredFromLibrary: true,
+                  sourceUrl: assetUrl,
+                  alt: latestAsset.alt || '',
+                  originalError: chatError ? chatError.message : 'Chat timeout'
+                }
+              };
+            }
+          }
+        }
+      } catch (failoverErr: any) {
+        console.warn(`[MythicFrame BEI] Library failover encountered error: ${failoverErr.message}`);
+      }
+    }
+
+    throw new Error(chatError ? chatError.message : 'BEI generation failed and Library failover could not recover any generated assets.');
   }
 
   // Save generated image to local disk in outputs/bei

@@ -47,6 +47,21 @@
       return 0;
     },
 
+    extractConversationId(url) {
+      if (!url) return null;
+      try {
+        const parsed = new URL(url);
+        const geminiMatch = parsed.pathname.match(/\/app\/([a-zA-Z0-9_-]+)/);
+        if (geminiMatch) return geminiMatch[1];
+        const gptMatch = parsed.pathname.match(/\/c\/([a-zA-Z0-9_-]+)/);
+        if (gptMatch) return gptMatch[1];
+      } catch (e) {
+        const geminiMatch = String(url).match(/\/app\/([a-zA-Z0-9_-]+)/);
+        if (geminiMatch) return geminiMatch[1];
+      }
+      return null;
+    },
+
     isGeneratedImage(imgElement) {
       if (!imgElement) return false;
       const src = imgElement.currentSrc || imgElement.src || '';
