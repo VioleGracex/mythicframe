@@ -1,5 +1,8 @@
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import path from 'path';
+import fs from 'fs';
+import { spawn } from 'child_process';
 
 export interface BEITabInfo {
   tabId: number;
@@ -140,8 +143,10 @@ export class BEIBridgeServer {
     this.knownAccounts.sort((a, b) => a.slot - b.slot);
   }
   private pendingJobs = new Map<string, PendingJob>();
+  private pendingActiveTabRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
+  private pendingLibraryRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private lastHeartbeat = Date.now();
-  private extensionVersion = '1.4.1';
+  private extensionVersion = '1.5.1';
   private projectDir = process.cwd();
   public latestProgress: Record<string, { step: string; detail: string; timestamp: number }> = {};
   public globalProgress: { step: string; detail: string; timestamp: number } | null = null;
@@ -155,6 +160,48 @@ export class BEIBridgeServer {
 
   public getPort(): number {
     return this.port;
+  }
+
+  public async ensureBrowserRunning(): Promise<boolean> {
+    if (this.isConnected()) return true;
+    if (process.platform === 'win32') {
+      const chromePaths = [
+        path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Google\\Chrome\\Application\\chrome.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google\\Chrome\\Application\\chrome.exe'),
+        path.join(process.env['LOCALAPPDATA'] || '', 'Google\\Chrome\\Application\\chrome.exe'),
+      ];
+      let launched = false;
+      for (const p of chromePaths) {
+        if (fs.existsSync(p)) {
+          try {
+            console.log(`[MythicFrame BEI Bridge] Auto-launching Google Chrome at: ${p}`);
+            spawn(p, ['https://gemini.google.com/u/0/app'], { detached: true, stdio: 'ignore' }).unref();
+            launched = true;
+            break;
+          } catch (e) {
+            console.warn('[MythicFrame BEI Bridge] Failed to launch Chrome binary:', e);
+          }
+        }
+      }
+      if (!launched) {
+        try {
+          spawn('cmd.exe', ['/c', 'start', 'chrome', 'https://gemini.google.com/u/0/app'], { detached: true, stdio: 'ignore' }).unref();
+          launched = true;
+        } catch (e) {}
+      }
+      if (launched) {
+        // Wait up to 5 seconds for extension WebSocket to connect
+        const start = Date.now();
+        while (Date.now() - start < 5000) {
+          await new Promise(r => setTimeout(r, 600));
+          if (this.isConnected()) {
+            console.log('[MythicFrame BEI Bridge] Google Chrome connected via BEI extension after auto-launch.');
+            return true;
+          }
+        }
+      }
+    }
+    return this.isConnected();
   }
 
   public isConnected(): boolean {
@@ -379,6 +426,16 @@ export class BEIBridgeServer {
 
         if (req.method === 'POST' && url.pathname === '/api/bei/open-tab') {
           this.handleOpenTabRequest(req, res);
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/bei/set-active-tab') {
+          this.handleSetActiveTabRequest(req, res);
+          return;
+        }
+
+        if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/bei/library') {
+          this.handleFetchLibraryRequest(req, res);
           return;
         }
 
@@ -800,6 +857,24 @@ export class BEIBridgeServer {
       }
       return;
     }
+
+    if (type === 'ACTIVE_TAB_SET') {
+      for (const [id, req] of this.pendingActiveTabRequests.entries()) {
+        clearTimeout(req.timer);
+        this.pendingActiveTabRequests.delete(id);
+        req.resolve(data);
+      }
+      return;
+    }
+
+    if (type === 'LIBRARY_ASSETS_FETCHED') {
+      for (const [id, req] of this.pendingLibraryRequests.entries()) {
+        clearTimeout(req.timer);
+        this.pendingLibraryRequests.delete(id);
+        req.resolve(data);
+      }
+      return;
+    }
   }
 
   private parseRequestBody(req: any): Promise<any> {
@@ -823,16 +898,20 @@ export class BEIBridgeServer {
   public async handleGenerateRequest(req: http.IncomingMessage, res: http.ServerResponse) {
     try {
       const payload = await this.parseRequestBody(req);
-      const { target = 'gemini', prompt, fullPrompt, aspectRatio = '16:9', accountSlot = 0, timeoutSeconds = 120, images = [], tabMode = 'new_window_group', bringTabToFront, chatSessionMode = 'temporary_chat', tabSessionId, preferredBrowser, browser } = payload;
+      const { target = 'gemini', prompt, fullPrompt, aspectRatio = '16:9', accountSlot = 0, timeoutSeconds = 120, images = [], tabMode = 'new_window_group', bringTabToFront, chatSessionMode = 'same_chat', tabSessionId, preferredBrowser, browser } = payload;
 
-        if (!prompt) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'MISSING_PROMPT', message: 'Prompt is required' }));
-          return;
-        }
+      if (!prompt) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'MISSING_PROMPT', message: 'Prompt is required' }));
+        return;
+      }
 
-        if (!this.isConnected()) {
-          res.writeHead(503, { 'Content-Type': 'application/json' });
+      if (!this.isConnected()) {
+        await this.ensureBrowserRunning();
+      }
+
+      if (!this.isConnected()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             error: 'BEI_EXTENSION_NOT_CONNECTED',
             message: 'MythicFrame BEI Chrome Extension is not currently connected. Please load the unpacked extension from /bei-extension and keep a Gemini or ChatGPT tab open.'
@@ -1114,6 +1193,10 @@ export class BEIBridgeServer {
       const { target = 'gemini', accountSlot = 0, tabMode, bringTabToFront, preferredBrowser, browser } = payload;
 
       if (!this.isConnected()) {
+        await this.ensureBrowserRunning();
+      }
+
+      if (!this.isConnected()) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'EXTENSION_NOT_CONNECTED', message: 'BEI Chrome Extension is not connected.' }));
         return;
@@ -1130,6 +1213,100 @@ export class BEIBridgeServer {
     } catch (err: any) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'INVALID_REQUEST', message: err.message }));
+    }
+  }
+
+  public async handleSetActiveTabRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    try {
+      const payload = await this.parseRequestBody(req).catch(() => ({}));
+      const { target = 'gemini', accountSlot = 0, preferredBrowser, browser } = payload || {};
+
+      if (!this.isConnected()) {
+        await this.ensureBrowserRunning();
+      }
+
+      if (!this.isConnected()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'EXTENSION_NOT_CONNECTED', message: 'BEI Chrome Extension is not connected.' }));
+        return;
+      }
+
+      const reqId = `tab_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const targetSocket = this.getClientSocket(preferredBrowser || browser) || this.extensionSocket;
+
+      const promise = new Promise<any>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (this.pendingActiveTabRequests.has(reqId)) {
+            this.pendingActiveTabRequests.delete(reqId);
+            reject(new Error('Timed out waiting for active tab to be set in browser'));
+          }
+        }, 15000);
+        this.pendingActiveTabRequests.set(reqId, { resolve, reject, timer });
+      });
+
+      targetSocket?.send(JSON.stringify({
+        type: 'SET_ACTIVE_TAB',
+        data: { target, accountSlot }
+      }));
+
+      const result = await promise;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'SET_ACTIVE_TAB_FAILED', message: err.message }));
+    }
+  }
+
+  public async handleFetchLibraryRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    try {
+      let payload: any = {};
+      if (req.method === 'POST') {
+        payload = await this.parseRequestBody(req).catch(() => ({}));
+      } else {
+        const u = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+        payload = {
+          target: u.searchParams.get('target') || 'gemini',
+          accountSlot: parseInt(u.searchParams.get('accountSlot') || '0', 10),
+          limit: parseInt(u.searchParams.get('limit') || '5', 10)
+        };
+      }
+      const { target = 'gemini', accountSlot = 0, limit = 5, preferredBrowser, browser } = payload || {};
+
+      if (!this.isConnected()) {
+        await this.ensureBrowserRunning();
+      }
+
+      if (!this.isConnected()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'EXTENSION_NOT_CONNECTED', message: 'BEI Chrome Extension is not connected.' }));
+        return;
+      }
+
+      const reqId = `lib_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const targetSocket = this.getClientSocket(preferredBrowser || browser) || this.extensionSocket;
+
+      const promise = new Promise<any>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (this.pendingLibraryRequests.has(reqId)) {
+            this.pendingLibraryRequests.delete(reqId);
+            reject(new Error('Timed out fetching library assets from browser'));
+          }
+        }, 20000);
+        this.pendingLibraryRequests.set(reqId, { resolve, reject, timer });
+      });
+
+      targetSocket?.send(JSON.stringify({
+        type: 'FETCH_LIBRARY_ASSETS',
+        data: { target, accountSlot, limit }
+      }));
+
+      const result = await promise;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'FETCH_LIBRARY_FAILED', message: err.message }));
     }
   }
 

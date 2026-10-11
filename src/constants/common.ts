@@ -1,5 +1,5 @@
 export const APP_NAME = "MythicFrame";
-export const APP_VERSION = "1.6.0";
+export const APP_VERSION = "1.6.1";
 
 export const MODE_CONFIG = {
   dashboard: { title: "Dashboard", icon: "fa-chart-pie", description: "Project overview and stats." },

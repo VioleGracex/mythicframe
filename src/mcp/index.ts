@@ -40,7 +40,9 @@ import {
   openBEITab,
   scanBEIAccounts,
   generateWithBEI,
-  getMythicSettings
+  getMythicSettings,
+  setActiveBEITab,
+  fetchBEILibraryAssets
 } from "./beiClient.js";
 
 // Helper to format output instructions for image generation
@@ -344,6 +346,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: "mythic_set_active_tab",
+        description: "Ensures the Google Gemini or ChatGPT tab is set as active in Chrome, preventing Chromium background tab throttling.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            target: { type: "string", enum: ["gemini", "chatgpt"], description: "AI service target (default 'gemini')" },
+            accountSlot: { type: "number", description: "Account slot index (default 0)" }
+          },
+          required: []
+        }
+      },
+      {
+        name: "mythic_fetch_library_assets",
+        description: "Fetches generated image assets from Google Gemini Web Library (/library). Useful when DOM chat extraction fails or to retrieve past generated images.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            target: { type: "string", enum: ["gemini"], description: "Target AI service (default 'gemini')" },
+            accountSlot: { type: "number", description: "Google account slot index (default 0)" },
+            limit: { type: "number", description: "Number of assets to retrieve (default 5)" }
+          },
+          required: []
+        }
+      },
+      {
         name: "mythic_bei_generate",
         description: "Generates an image via the Browser Extension Interface (BEI) using active Google Gemini or ChatGPT browser sessions with ZERO API key required.",
         inputSchema: {
@@ -356,6 +383,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             images: { type: "array", items: { type: "string" }, description: "Array of reference image paths or base64 data URIs" },
             style: { type: "string", description: "Optional art style snippet" },
             quality: { type: "string", enum: ["standard", "high", "ultra_original"], description: "Image resolution & quality mode: 'ultra_original' (master full-res), 'high' (2K), or 'standard' (preview)" },
+            chatSessionMode: { type: "string", enum: ["same_chat", "temporary_chat", "new_chat"], description: "Conversation session mode: 'same_chat' (reuses current conversation thread), 'new_chat' (forces fresh conversation), or 'temporary_chat'. Default: 'same_chat'" },
             timeoutSeconds: { type: "number", description: "Timeout in seconds (default 120)" }
           },
           required: ["prompt"]
@@ -605,6 +633,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const res = await scanBEIAccounts();
       return { content: [{ type: "text", text: res.message }] };
     }
+    else if (name === "mythic_set_active_tab") {
+      const target = args.target || 'gemini';
+      const slot = args.accountSlot ?? 0;
+      const res = await setActiveBEITab(target, slot);
+      return { content: [{ type: "text", text: res.message }] };
+    }
+    else if (name === "mythic_fetch_library_assets") {
+      const target = args.target || 'gemini';
+      const slot = args.accountSlot ?? 0;
+      const limit = args.limit ?? 5;
+      const res = await fetchBEILibraryAssets(target, slot, limit);
+      if (!res.success) {
+        return { content: [{ type: "text", text: `Failed to fetch library assets: ${res.message}` }], isError: true };
+      }
+      let text = `Found ${(res.assets || []).length} assets in Google Gemini Library (Slot ${slot}):\n\n`;
+      (res.assets || []).forEach((a: any, idx: number) => {
+        text += `${idx + 1}. High-Res URL: ${a.highResUrl || a.src}\n   Alt: ${a.alt || 'Generated image'}\n\n`;
+      });
+      return { content: [{ type: "text", text }] };
+    }
     else if (name === "mythic_bei_generate") {
       let promptToSend = args.prompt;
       if (args.style) {
@@ -619,6 +667,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         images: args.images || [],
         quality: args.quality || 'ultra_original',
         dispatchMode: args.dispatchMode || 'single',
+        chatSessionMode: args.chatSessionMode || 'same_chat',
         timeoutSeconds: args.timeoutSeconds || 900
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, '/');

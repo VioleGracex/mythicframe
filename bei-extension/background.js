@@ -313,6 +313,26 @@ async function refreshGoogleAccountsList() {
 async function ensureContentScriptInjected(tabId, target) {
   if (!chrome.scripting || !chrome.scripting.executeScript) return;
   try {
+    // Probe if script is already responsive to prevent duplicate listeners
+    const isAlive = await new Promise(resolve => {
+      try {
+        chrome.tabs.sendMessage(tabId, { action: 'PING' }, (resp) => {
+          if (chrome.runtime.lastError) {
+            resolve(false);
+          } else {
+            resolve(Boolean(resp && resp.pong));
+          }
+        });
+      } catch (e) {
+        resolve(false);
+      }
+    });
+
+    if (isAlive) {
+      console.log(`[MythicFrame BEI] Content script already active on tab ${tabId}. Skipping injection.`);
+      return;
+    }
+
     const scriptFiles = target === "gemini" 
       ? ["scripts/protocol.js", "scripts/gemini_content.js"]
       : ["scripts/protocol.js", "scripts/chatgpt_content.js"];
@@ -778,26 +798,19 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
     }
 
     if (target === "gemini") {
-      // 1. Check if tab already exists in "MythicFrame BEI" tab group for this slot
-      let matchedTab = allTabs.find(t => {
-        if (!beiGroupTabIds.has(t.id)) return false;
+      const isSlotMatch = (t) => {
         const u = (t.url || t.pendingUrl || '').toLowerCase();
         if (!u.includes("gemini.google.com")) return false;
         const slotMatch = u.match(/\/u\/(\d+)/);
         const slot = slotMatch ? parseInt(slotMatch[1], 10) : 0;
         return slot === targetSlot;
-      });
+      };
 
-      // 2. Check if tab matching this slot exists anywhere else in Chrome
-      if (!matchedTab) {
-        matchedTab = allTabs.find(t => {
-          const u = (t.url || t.pendingUrl || '').toLowerCase();
-          if (!u.includes("gemini.google.com")) return false;
-          const slotMatch = u.match(/\/u\/(\d+)/);
-          const slot = slotMatch ? parseInt(slotMatch[1], 10) : 0;
-          return slot === targetSlot;
-        });
-      }
+      // 1. Prioritize tabs already on /app (composer page)
+      let matchedTab = allTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t) && (t.url || '').includes('/app')) ||
+                       allTabs.find(t => isSlotMatch(t) && (t.url || '').includes('/app')) ||
+                       allTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t)) ||
+                       allTabs.find(t => isSlotMatch(t));
 
       if (matchedTab && matchedTab.id) {
         console.log(`[MythicFrame BEI] Reusing existing Gemini tab ${matchedTab.id} for slot ${targetSlot} (In BEI Group: ${beiGroupTabIds.has(matchedTab.id)}).`);
@@ -814,17 +827,32 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
           } catch (e) {}
         }
 
-        // In temporary_chat or new_chat mode, reset URL if needed
-        if (chatSessionMode !== 'same_chat') {
-          const u = matchedTab.url || matchedTab.pendingUrl || '';
-          if (u.match(/\/app\/[a-zA-Z0-9_-]+/)) {
-            console.log(`[MythicFrame BEI] Resetting tab ${matchedTab.id} to clean /u/${targetSlot}/app (mode: ${chatSessionMode})...`);
-            try {
-              await chrome.tabs.update(matchedTab.id, { url: `https://gemini.google.com/u/${targetSlot}/app` });
-              await waitForTabReady(matchedTab.id, 10000);
-            } catch (e) {}
-          }
+        // Handle chatSessionMode:
+        // 'same_chat': keep the active conversation (/app/<chat_id>), do NOT force navigation to /app!
+        // 'new_chat': explicitly navigate to /app to start a new chat.
+        // 'temporary_chat': keep active /app* conversation if present; navigate only if on /library or settings.
+        const currentUrl = matchedTab.url || matchedTab.pendingUrl || '';
+        const isInApp = currentUrl.includes('/app');
+        if (chatSessionMode === 'new_chat') {
+          console.log(`[MythicFrame BEI] 'new_chat' requested: Navigating tab ${matchedTab.id} to clean /u/${targetSlot}/app...`);
+          try {
+            await chrome.tabs.update(matchedTab.id, { url: `https://gemini.google.com/u/${targetSlot}/app` });
+            await waitForTabReady(matchedTab.id, 12000);
+          } catch (e) {}
+        } else if (!isInApp) {
+          console.log(`[MythicFrame BEI] Tab ${matchedTab.id} not on /app (${currentUrl}). Navigating to /u/${targetSlot}/app...`);
+          try {
+            await chrome.tabs.update(matchedTab.id, { url: `https://gemini.google.com/u/${targetSlot}/app` });
+            await waitForTabReady(matchedTab.id, 12000);
+          } catch (e) {}
+        } else {
+          console.log(`[MythicFrame BEI] Reusing active chat thread on tab ${matchedTab.id} (${currentUrl}) without reloading.`);
         }
+
+        // Anti-throttling: ensure tab is active in its window during execution so Chromium doesn't throttle DOM timers
+        try {
+          await chrome.tabs.update(matchedTab.id, { active: true });
+        } catch (e) {}
 
         await ensureContentScriptInjected(matchedTab.id, "gemini");
         return matchedTab.id;
@@ -834,7 +862,7 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       console.log(`[MythicFrame BEI Worker] Opening single tab for Gemini slot ${targetSlot} (Mode: ${tabMode}, Focus: ${bringTabToFront})...`);
       const newTab = await chrome.tabs.create({
         url: `https://gemini.google.com/u/${targetSlot}/app`,
-        active: Boolean(bringTabToFront)
+        active: true
       });
       // Organize into BEI group IMMEDIATELY upon creation
       await organizeTabIntoBEIGroup(newTab.id, tabMode, bringTabToFront);
@@ -1064,6 +1092,11 @@ async function startJob(jobData) {
   activeJobs.set(jobId, { tabId, target, prompt, fullPrompt, accountSlot: parsedSlot, aspectRatio, modelQuality, submitted: false });
   persistSessionJobs();
 
+  // Anti-throttling: ensure tab is active in its window during execution so Chromium doesn't throttle DOM timers
+  try {
+    await chrome.tabs.update(tabId, { active: true });
+  } catch (e) {}
+
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       type: "GENERATION_PROGRESS",
@@ -1113,6 +1146,85 @@ async function handleBridgeCommand(msg) {
           accounts: Array.from(knownGoogleAccounts.values())
         } 
       }));
+    }
+    return;
+  }
+
+  if (type === "SET_ACTIVE_TAB") {
+    const { target = "gemini", accountSlot = 0 } = data || {};
+    const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
+    try {
+      const tabId = await findOrCreateTab(target, parsedSlot, 'same_window_group', true, 'same_chat');
+      if (tabId) {
+        await chrome.tabs.update(tabId, { active: true });
+        const tab = await chrome.tabs.get(tabId);
+        if (tab && tab.windowId) {
+          try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
+        }
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "ACTIVE_TAB_SET",
+            data: { success: true, tabId, target, accountSlot: parsedSlot }
+          }));
+        }
+      }
+    } catch (err) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "ACTIVE_TAB_SET",
+          data: { success: false, error: err.message }
+        }));
+      }
+    }
+    return;
+  }
+
+  if (type === "FETCH_LIBRARY_ASSETS") {
+    const { target = "gemini", accountSlot = 0, limit = 5 } = data || {};
+    const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
+    try {
+      const allTabs = await chrome.tabs.query({});
+      let libTab = allTabs.find(t => {
+        const u = (t.url || '').toLowerCase();
+        return u.includes(`gemini.google.com/u/${parsedSlot}/library`) || (parsedSlot === 0 && u.includes('gemini.google.com/library'));
+      });
+      if (!libTab) {
+        libTab = await chrome.tabs.create({
+          url: `https://gemini.google.com/u/${parsedSlot}/library`,
+          active: false
+        });
+        await waitForTabReady(libTab.id, 15000);
+      }
+      await ensureContentScriptInjected(libTab.id, "gemini");
+      await new Promise(r => setTimeout(r, 1200));
+
+      chrome.tabs.sendMessage(libTab.id, {
+        action: "EXTRACT_LIBRARY_ASSETS",
+        data: { limit, accountSlot: parsedSlot }
+      }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "LIBRARY_ASSETS_FETCHED",
+              data: { success: false, error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'No response from library tab.' }
+            }));
+          }
+        } else {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "LIBRARY_ASSETS_FETCHED",
+              data: { success: true, assets: res.assets || [], accountSlot: parsedSlot }
+            }));
+          }
+        }
+      });
+    } catch (err) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "LIBRARY_ASSETS_FETCHED",
+          data: { success: false, error: err.message }
+        }));
+      }
     }
     return;
   }

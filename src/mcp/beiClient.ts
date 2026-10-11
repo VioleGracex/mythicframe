@@ -46,6 +46,7 @@ export interface BEIGenerateOptions {
   bringTabToFront?: boolean;
   quality?: 'standard' | 'high' | 'ultra_original';
   dispatchMode?: 'single' | 'multi';
+  chatSessionMode?: 'same_chat' | 'temporary_chat' | 'new_chat';
 }
 
 export interface BEIGenerateResult {
@@ -300,6 +301,48 @@ export async function scanBEIAccounts(): Promise<{ success: boolean; message: st
 }
 
 /**
+ * Ensures the target AI tab is active in Chrome to prevent background throttling.
+ */
+export async function setActiveBEITab(target: 'gemini' | 'chatgpt' = 'gemini', accountSlot: number = 0): Promise<{ success: boolean; message: string; tabId?: number }> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/set-active-tab`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, accountSlot })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      return { success: false, message: `Failed to set active tab: ${errText}` };
+    }
+    const data: any = await res.json();
+    return { success: true, message: `Active tab set successfully for ${target} slot ${accountSlot}`, tabId: data.tabId };
+  } catch (err: any) {
+    return { success: false, message: `Could not reach BEI Bridge: ${err.message}` };
+  }
+}
+
+/**
+ * Fetches assets from Google Gemini Web Library (/library).
+ */
+export async function fetchBEILibraryAssets(target: 'gemini' = 'gemini', accountSlot: number = 0, limit: number = 5): Promise<{ success: boolean; assets?: any[]; message?: string }> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/library`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, accountSlot, limit })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      return { success: false, message: `Failed to fetch library assets: ${errText}` };
+    }
+    const data: any = await res.json();
+    return { success: true, assets: data.assets || [], message: `Found ${(data.assets || []).length} assets in ${target} Library.` };
+  } catch (err: any) {
+    return { success: false, message: `Could not reach BEI Bridge: ${err.message}` };
+  }
+}
+
+/**
  * Fetches all active settings, accounts, quotas, and preferences from MythicFrame.
  */
 export async function getMythicSettings(): Promise<any> {
@@ -313,7 +356,7 @@ export async function getMythicSettings(): Promise<any> {
       bridgeRunning: Boolean(statusData),
       bridgePort: BRIDGE_PORT,
       webPort: WEB_PORT,
-      extensionVersion: statusData?.extensionVersion || '1.4.0',
+      extensionVersion: statusData?.extensionVersion || '1.5.1',
       connected: Boolean(statusData?.connected),
       accounts: statusData?.accounts || [],
       tabs: statusData?.tabs || [],
@@ -341,7 +384,8 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     tabMode = 'new_window_group',
     bringTabToFront = false,
     quality = 'ultra_original',
-    dispatchMode = 'single'
+    dispatchMode = 'single',
+    chatSessionMode = 'same_chat'
   } = options;
 
   // Process reference images (convert local file paths to base64 data URIs if necessary)
@@ -368,7 +412,8 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     tabMode,
     bringTabToFront,
     quality,
-    dispatchMode
+    dispatchMode,
+    chatSessionMode
   };
 
   const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/generate`, {

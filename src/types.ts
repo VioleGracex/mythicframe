@@ -516,3 +516,10 @@ export interface WorkspaceTab {
   batchGenerationMode: BatchGenerationMode;
   batchVariations: BatchVariation[];
 }
+
+declare global {
+  function showInAppAlert(message: string, options?: { title?: string; confirmText?: string; isDestructive?: boolean }): Promise<void>;
+  function showInAppConfirm(message: string, options?: { title?: string; confirmText?: string; cancelText?: string; isDestructive?: boolean }): Promise<boolean>;
+  function showInAppPrompt(message: string, defaultValue?: string, options?: { title?: string; confirmText?: string; cancelText?: string }): Promise<string | null>;
+}
+

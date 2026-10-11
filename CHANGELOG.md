@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.1] — 2026-10-11 *(BEI Extension v1.5.1)*
+
+### Added
+- **Chat Session Mode Continuity (1 Session = 1 Chat)**:
+  - Enabled conversation thread reuse (`same_chat`) by default in BEI background worker and bridge server, preventing repetitive new chat spawning and sidebar flooding.
+  - Retains active conversation paths (`/app/<chat_id>`) without reloading when generation jobs are submitted.
+- **Strict In-Order Composer Sequencing and Anti-Race Stabilization**:
+  - Enforced strict execution order in Gemini content script: Tool Tag ('Create image') -> Aspect Ratio -> Reference Image Upload with progress stabilization -> Prompt Text -> Pre-send Verification -> Send dispatch.
+  - Added stabilization timeouts (600ms post-tag, 350ms post-ratio, 800ms post-upload, 450ms post-text) to ensure Angular and Material UI listeners settle.
+- **Active Tab Anti-Throttling**:
+  - Automatically activates the target Gemini/ChatGPT tab within its window (`chrome.tabs.update(tabId, { active: true })`) during job execution, preventing Chromium background timer/mutation observer freezing.
+  - Added `mythic_set_active_tab` MCP tool and `/api/bei/set-active-tab` endpoint.
+- **Google Gemini Web Library Access and Recovery**:
+  - Added Library media extraction in extension content script for `gemini.google.com/*/library`.
+  - Upgrades discovered thumbnails to high-resolution master URLs (`=s0`/`=s2048`).
+  - Added `mythic_fetch_library_assets` MCP tool and `/api/bei/library` endpoint for asset recovery.
+- **Windows Browser Auto-Launch**:
+  - Automatically locates and launches Google Chrome if no extension socket is connected when generation or tab commands arrive.
+
+---
+
 ## [1.6.0] — 2026-10-11 *(BEI Extension v1.5.0)*
 
 ### Added

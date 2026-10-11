@@ -5,6 +5,12 @@
  */
 
 (() => {
+  if (window.__MYTHIC_BEI_GEMINI_INITIALIZED__) {
+    console.log('[MythicFrame BEI] Gemini content script already initialized on tab. Skipping duplicate attach.');
+    return;
+  }
+  window.__MYTHIC_BEI_GEMINI_INITIALIZED__ = true;
+
   const protocol = globalThis.__MYTHIC_BEI__ || {
     extractGeminiAccountSlot: () => 0,
     isGeneratedImage: (img) => img && (img.src || '').includes('googleusercontent.com'),
@@ -58,9 +64,16 @@
   const SEND_BUTTON_SELECTORS = [
     "button[aria-label*='Send' i]",
     "button[aria-label*='Submit' i]",
+    "button[aria-label*='إرسال' i]",
+    "button[aria-label*='Envoyer' i]",
+    "button[aria-label*='Enviar' i]",
+    "button[aria-label*='Senden' i]",
     "button.send-button",
     "[data-test-id='send-button']",
-    "button.mat-mdc-icon-button[aria-label*='Send' i]"
+    "button.mat-mdc-icon-button[aria-label*='Send' i]",
+    "button.mat-mdc-icon-button[aria-label*='إرسال' i]",
+    ".input-area button[aria-label*='Send' i]",
+    ".input-area button[aria-label*='إرسال' i]"
   ];
 
   const GEMINI_REFUSAL_PATTERNS = [
@@ -117,12 +130,15 @@
 
   const STOP_BUTTON_SELECTORS = [
     "button[aria-label*='Stop' i]",
+    "button[aria-label*='إيقاف' i]",
     "button[data-test-id*='stop']",
     "button[mattooltip*='Stop' i]",
+    "button[mattooltip*='إيقاف' i]",
     "button.stop-button",
     ".stop-response-button",
     "[aria-label*='Stop response' i]",
-    "[aria-label*='Stop generation' i]"
+    "[aria-label*='Stop generation' i]",
+    "[aria-label*='إيقاف الرد' i]"
   ];
 
   function isStopButtonElement(target) {
@@ -134,7 +150,7 @@
       const aria = (anyBtn.getAttribute('aria-label') || '').toLowerCase();
       const tooltip = (anyBtn.getAttribute('mattooltip') || '').toLowerCase();
       const text = (anyBtn.innerText || anyBtn.textContent || '').trim().toLowerCase();
-      if (aria.includes('stop') || tooltip.includes('stop') || text === 'stop' || text === 'stop response') {
+      if (aria.includes('stop') || aria.includes('إيقاف') || tooltip.includes('stop') || tooltip.includes('إيقاف') || text === 'stop' || text === 'stop response' || text === 'إيقاف') {
         return true;
       }
       const icon = anyBtn.querySelector('mat-icon, svg, i');
@@ -249,6 +265,28 @@
         }
       } catch (e) {}
     }
+    // Deep fallback: scan all buttons in the input area for send icon or aria-label
+    try {
+      const container = document.querySelector('.bottom-container, .input-area, .chat-input-container, rich-textarea')?.parentElement || document.body;
+      const candidates = Array.from(container.querySelectorAll('button:not([disabled])'));
+      for (const btn of candidates) {
+        if (btn.getAttribute('aria-disabled') === 'true') continue;
+        const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+        const text = (btn.textContent || '').trim().toLowerCase();
+        const html = btn.innerHTML.toLowerCase();
+        const isSendWord = aria.includes('send') || aria.includes('submit') || aria.includes('إرسال') ||
+                           text.includes('send') || text.includes('submit') || text.includes('إرسال');
+        const hasSendIcon = html.includes('send') || html.includes('arrow_forward') || html.includes('arrow_upward') ||
+                            btn.querySelector('mat-icon[fonticon*="send"], [data-mat-icon-name*="send"], svg path');
+        if (isSendWord || hasSendIcon) {
+          if (!aria.includes('mic') && !aria.includes('voice') && !aria.includes('audio') && 
+              !aria.includes('صوت') && !aria.includes('أدوات') && !aria.includes('tools') && 
+              !aria.includes('add') && !aria.includes('إضافة') && !aria.includes('file') && !aria.includes('upload')) {
+            return btn;
+          }
+        }
+      }
+    } catch (e) {}
     return null;
   }
 
@@ -541,13 +579,14 @@
       if (!nativeActive) {
         // Try clicking the native "+" / tools button to select "Create image"
         const toolsBtns = Array.from(document.querySelectorAll(
-          "button[aria-label*='Tools' i], button[aria-label*='Add' i], button[aria-label*='Upload' i], .input-area button, .chat-input-container button"
+          "button[aria-label*='Tools' i], button[aria-label*='Add' i], button[aria-label*='Upload' i], button[aria-label*='أدوات' i], button[aria-label*='إضافة' i], .input-area button, .chat-input-container button"
         ));
 
         const addBtn = toolsBtns.find(b => {
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
           const txt = (b.textContent || '').trim().toLowerCase();
-          return aria.includes('add') || aria.includes('tools') || aria.includes('more') || txt === '+';
+          return aria.includes('add') || aria.includes('tools') || aria.includes('more') || 
+                 aria.includes('إضافة') || aria.includes('أدوات') || txt === '+';
         });
 
         if (addBtn) {
@@ -558,7 +597,10 @@
           const menuItems = Array.from(document.querySelectorAll(".cdk-overlay-pane [role='menuitem'], [role='menu'] button, [role='menu'] [role='menuitem']"));
           const createImgItem = menuItems.find(m => {
             const txt = (m.textContent || '').toLowerCase();
-            return txt.includes('create image');
+            const aria = (m.getAttribute('aria-label') || '').toLowerCase();
+            return txt.includes('create image') || txt.includes('image') || txt.includes('صورة') ||
+                   txt.includes('إنشاء صورة') || aria.includes('create image') || aria.includes('صورة') ||
+                   m.querySelector('[data-icon*="brush"], [data-icon*="image"], mat-icon, span.google-symbols, .material-symbols-outlined');
           });
 
           if (createImgItem) {
@@ -1334,16 +1376,18 @@
       promptToSend = `Create image: ${promptToSend}`;
     }
 
-    // Try selecting Create Image mode tool and aspect ratio if available in UI
+    // 1. Tag "Create image" or active mode tag first - and select aspect ratio if in menu
     reportProgress(jobId, 'create_image_mode', `Activating native "Create image" tool mode (AR: ${aspectRatio || '1:1'})...`);
     await ensureCreateImageMode(jobId, aspectRatio || '1:1');
+    await new Promise(r => setTimeout(r, 600));
 
-    // Select native model quality / thinking depth if requested
+    // 2. Select native model quality / thinking depth if requested
     if (modelQuality && modelQuality !== 'default') {
       await selectNativeModelQuality(modelQuality);
+      await new Promise(r => setTimeout(r, 350));
     }
 
-    // Attach reference images if any exist, waiting for upload to fully complete
+    // 3. Attach reference image(s) if any exist, waiting for upload to fully complete
     if (images && images.length > 0) {
       reportProgress(jobId, 'uploading_references', `Uploading reference image(s) (1/${images.length})...`);
       const maxUploadWait = Math.max((timeoutSeconds || 900) * 1000, 600000);
@@ -1363,8 +1407,8 @@
         return;
       }
 
-      // Crucial: Wait 400ms for Angular DOM stabilization after reference card attaches
-      await new Promise(r => setTimeout(r, 400));
+      // Crucial: Wait 800ms for Angular DOM stabilization after reference card attaches
+      await new Promise(r => setTimeout(r, 800));
     }
 
     // Always re-acquire FRESH composer element from DOM (guards against Angular detached nodes)
@@ -1381,14 +1425,15 @@
     if (!isCreateImageTagActive()) {
       console.log('[MythicFrame BEI] "Create image" tag missing after attachment. Re-activating...');
       await ensureCreateImageMode(jobId, aspectRatio || '1:1');
+      await new Promise(r => setTimeout(r, 400));
     }
 
-    // Inject prompt text into the fresh composer
+    // 4. Inject prompt text into the fresh composer
     reportProgress(jobId, 'submitting_prompt', 'Injecting prompt directive into composer...');
     setComposerText(composer, promptToSend);
-    await new Promise(r => setTimeout(r, 250));
+    await new Promise(r => setTimeout(r, 450));
 
-    // STRICT PRE-SEND VERIFICATION GATE ("THE BOUNCER")
+    // 5. STRICT PRE-SEND VERIFICATION GATE ("THE BOUNCER")
     reportProgress(jobId, 'verifying', 'Verifying composer state before submission...');
     const verification = await verifyPreSendState({
       expectedPrompt: promptToSend,
@@ -1443,8 +1488,10 @@
 
     // Click send button
     if (sendBtn) {
+      console.log('🚀 [MythicFrame BEI] Send button found and clicked!');
       sendBtn.click();
     } else {
+      console.warn('⚠️ [MythicFrame BEI] Send button not found in DOM! Attempting dispatchEvent Enter...');
       // Fallback: Dispatch Enter key
       composer.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Enter',
@@ -1775,6 +1822,32 @@
                 return;
               }
             }
+
+            // D. Unexpected Text Response Detection (Gemini completed turn with text instead of an image)
+            if (elapsed > 12000 && !isGeminiActivelyGenerating()) {
+              const hasProgress = targetResponse.querySelector('.loading, .shimmer, mat-progress-bar, mat-progress-spinner, [role="progressbar"]');
+              if (!hasProgress) {
+                const hasImg = protocol.getAllImagesRecursively(targetResponse).some(img => protocol.isGeneratedImage(img) && !isUserAttachedImage(img));
+                if (!hasImg) {
+                  activeRunningJobId = null;
+                  activeCancelHandler = null;
+                  clearInterval(checkInterval);
+                  if (keepAlivePort) keepAlivePort.disconnect();
+                  clickStopButton();
+                  clearComposer();
+                  const excerpt = respText.length > 200 ? respText.substring(0, 200) + '...' : respText;
+                  const textNotice = `Gemini completed response with text instead of an image: "${excerpt}"`;
+                  console.warn(`[MythicFrame BEI] ${textNotice}`);
+                  try {
+                    chrome.runtime.sendMessage({
+                      type: 'GENERATION_FAILED',
+                      data: { jobId, error: textNotice }
+                    });
+                  } catch (e) {}
+                  return;
+                }
+              }
+            }
           }
         }
 
@@ -2031,6 +2104,51 @@
       const { jobId, prompt, timeoutSeconds } = request.data || {};
       executeTextPrompt(jobId, prompt, timeoutSeconds);
       sendResponse({ success: true, started: true });
+      return true;
+    }
+
+    if (request.action === 'EXTRACT_LIBRARY_ASSETS') {
+      (async () => {
+        try {
+          // If on /library, switch to Media tab if available
+          const mediaTab = Array.from(document.querySelectorAll('button, [role="tab"], a, mat-chip, .filter-chip')).find(el => {
+            const t = (el.textContent || '').trim().toLowerCase();
+            const a = (el.getAttribute('aria-label') || '').toLowerCase();
+            return t.includes('media') || t.includes('الوسائط') || a.includes('media') || a.includes('الوسائط');
+          });
+          if (mediaTab && mediaTab.getAttribute('aria-selected') !== 'true') {
+            try {
+              mediaTab.click();
+              await new Promise(r => setTimeout(r, 600));
+            } catch (e) {}
+          }
+
+          const imgs = protocol.getAllImagesRecursively(document.body);
+          const seen = new Set();
+          const assets = [];
+          for (const img of imgs) {
+            const src = img.src || img.getAttribute('data-src') || '';
+            if (!src || (!protocol.isGeneratedImage(img) && !src.includes('googleusercontent.com'))) continue;
+            // Skip small avatars or icons
+            if (src.includes('/a/') || src.includes('=s32') || src.includes('=s64') || src.includes('=s96')) continue;
+            if (seen.has(src)) continue;
+            seen.add(src);
+
+            const highResUrl = protocol.getHighResImageUrl(src);
+            const alt = img.alt || img.getAttribute('aria-label') || '';
+            assets.push({
+              src,
+              highResUrl,
+              alt,
+              timestamp: Date.now()
+            });
+            if (assets.length >= (request.data?.limit || 20)) break;
+          }
+          sendResponse({ success: true, assets, count: assets.length });
+        } catch (err) {
+          sendResponse({ success: false, error: err.message });
+        }
+      })();
       return true;
     }
 
