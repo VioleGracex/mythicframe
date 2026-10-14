@@ -1401,7 +1401,7 @@ async function getMythicSettings() {
       bridgeRunning: Boolean(statusData),
       bridgePort: BRIDGE_PORT,
       webPort: WEB_PORT,
-      extensionVersion: statusData?.extensionVersion || "1.5.1",
+      extensionVersion: statusData?.extensionVersion || "1.5.2",
       connected: Boolean(statusData?.connected),
       accounts: statusData?.accounts || [],
       tabs: statusData?.tabs || [],
@@ -1422,7 +1422,7 @@ async function generateWithBEI(options) {
     accountSlot = 0,
     images = [],
     timeoutSeconds = 900,
-    tabMode = "same_window_group",
+    tabMode = "new_window_group",
     bringTabToFront = false,
     quality = "ultra_original",
     dispatchMode = "single",
@@ -1908,7 +1908,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             style: { type: "string", description: "Optional art style snippet" },
             quality: { type: "string", enum: ["standard", "high", "ultra_original"], description: "Image resolution & quality mode: 'ultra_original' (master full-res), 'high' (2K), or 'standard' (preview)" },
             chatSessionMode: { type: "string", enum: ["same_chat", "temporary_chat", "new_chat"], description: "Conversation session mode: 'same_chat' (reuses current conversation thread), 'new_chat' (forces fresh conversation), or 'temporary_chat'. Default: 'same_chat'" },
-            tabMode: { type: "string", enum: ["same_window_group", "new_window_group"], description: "Tab group organization mode: 'same_window_group' (organizes tabs into existing/current window's BEI group, default) or 'new_window_group'" },
             timeoutSeconds: { type: "number", description: "Timeout in seconds (default 120)" }
           },
           required: ["prompt"]
@@ -2229,7 +2228,6 @@ ${downloadSection}`;
         quality: args.quality || "ultra_original",
         dispatchMode: args.dispatchMode || "single",
         chatSessionMode: args.chatSessionMode || "same_chat",
-        tabMode: args.tabMode || "same_window_group",
         timeoutSeconds: args.timeoutSeconds || 900
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, "/");

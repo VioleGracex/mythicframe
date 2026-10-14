@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.6.1] — 2026-10-11 *(BEI Extension v1.5.1)*
+## [1.6.1] — 2026-10-11 *(BEI Extension v1.5.2)*
 
 ### Added
+- **Automated Gemini Library Failover Protocol**:
+  - Implemented automatic asset recovery from `gemini.google.com/*/library` when DOM chat extraction stalls or fails.
+  - Upgrades discovered thumbnails to full-fidelity master URLs (`=s0`/`=s2048`) and exposes `mythic_fetch_library_assets` tool for AI agents.
+- **Tab Group Deduplication & Cross-Window Reuse**:
+  - Global query across all Chrome windows to detect and reuse existing `"MythicFrame BEI"` tab groups, preventing duplicate group proliferation on service worker wake-up.
+  - Set default tab mode to `same_window_group` in MCP client and bridge server.
+- **13 Ordered Shot-Distance Framing Presets**:
+  - Added full cinematography shot hierarchy (from `extreme_close_up` ECU through `very_wide_shot` VWS) with short codes, descriptions, and prompt token injection in character helper and MCP tools.
+- **Auto-Execute Generation Mode**:
+  - Added `autoExecuteGeneration` setting in `mythic_project.json` for seamless AI agent image generation without pre-confirmation halts.
 - **Chat Session Mode Continuity (1 Session = 1 Chat)**:
   - Enabled conversation thread reuse (`same_chat`) by default in BEI background worker and bridge server, preventing repetitive new chat spawning and sidebar flooding.
   - Retains active conversation paths (`/app/<chat_id>`) without reloading when generation jobs are submitted.
@@ -19,10 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Active Tab Anti-Throttling**:
   - Automatically activates the target Gemini/ChatGPT tab within its window (`chrome.tabs.update(tabId, { active: true })`) during job execution, preventing Chromium background timer/mutation observer freezing.
   - Added `mythic_set_active_tab` MCP tool and `/api/bei/set-active-tab` endpoint.
-- **Google Gemini Web Library Access and Recovery**:
-  - Added Library media extraction in extension content script for `gemini.google.com/*/library`.
-  - Upgrades discovered thumbnails to high-resolution master URLs (`=s0`/`=s2048`).
-  - Added `mythic_fetch_library_assets` MCP tool and `/api/bei/library` endpoint for asset recovery.
 - **Windows Browser Auto-Launch**:
   - Automatically locates and launches Google Chrome if no extension socket is connected when generation or tab commands arrive.
 

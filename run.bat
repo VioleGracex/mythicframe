@@ -10,6 +10,17 @@ echo.
 :: 1. Check Node.js
 where node >nul 2>nul
 if %ERRORLEVEL% neq 0 (
+    if exist "C:\Program Files\nodejs\node.exe" (
+        set "PATH=C:\Program Files\nodejs;%PATH%"
+    ) else if exist "%ProgramFiles%\nodejs\node.exe" (
+        set "PATH=%ProgramFiles%\nodejs;%PATH%"
+    ) else if exist "%LOCALAPPDATA%\Programs\node\node.exe" (
+        set "PATH=%LOCALAPPDATA%\Programs\node;%PATH%"
+    )
+)
+
+where node >nul 2>nul
+if %ERRORLEVEL% neq 0 (
     echo [ERROR] Node.js is not found on your system.
     echo.
     echo Would you like to install Node.js via winget? (Y/N)

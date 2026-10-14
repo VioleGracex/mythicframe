@@ -146,7 +146,7 @@ export class BEIBridgeServer {
   private pendingActiveTabRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private pendingLibraryRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private lastHeartbeat = Date.now();
-  private extensionVersion = '1.5.1';
+  private extensionVersion = '1.5.2';
   private projectDir = process.cwd();
   public latestProgress: Record<string, { step: string; detail: string; timestamp: number }> = {};
   public globalProgress: { step: string; detail: string; timestamp: number } | null = null;

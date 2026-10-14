@@ -1,7 +1,7 @@
 # MythicFrame – Full Project Documentation & Functionality Reference
 
-> **Version:** 1.4.0  
-> **Platform:** Web Desktop Application (React 19 + TypeScript + Express + SQLite + MCP Server)  
+> **Version:** 1.6.1  
+> **Platform:** Web Desktop Application (React 19.2 + TypeScript + Express 5.2 + SQLite + MCP Server v2.0.0 + BEI Extension v1.5.2)  
 > **Category:** Generative AI Game Asset Studio & Card Production Workstation  
 
 ---
@@ -43,8 +43,9 @@
 7. [Specialized Core Technologies & Algorithms](#7-specialized-core-technologies--algorithms)
    - [Transparent NEO Matting Pipeline](#transparent-neo-matting-pipeline)
    - [Game Context & World Bible Inheritance](#game-context--world-bible-inheritance)
-   - [Pose Rigging Adherence Translation](#pose-rigging-adherence-translation)
+   - [Biomechanical Pose Rigging & IK Solver](#biomechanical-pose-rigging--ik-solver)
    - [Continuity Flags System](#continuity-flags-system)
+   - [In-App Dialog Engine](#in-app-dialog-engine)
 8. [Multi-Tab Workspace & Export Systems](#8-multi-tab-workspace--export-systems)
 9. [Complete Pages & Modes Reference Table](#9-complete-pages--modes-reference-table)
 
@@ -79,34 +80,56 @@ The platform operates a unified provider interface (`src/services/aiProviderServ
    - **Completely free image generation** with zero API keys required, ideal for testing, hobbyists, or offline development.
 6. **Offline Prompt Mode**:
    - Compiles fully styled, negative-prompted, and context-injected prompt strings without executing an API call. Includes 1-click clipboard copying for external diffusion platforms.
-7. **BEI Mode (Browser Extension Interface)**:
+7. **BEI Mode (Browser Extension Interface v1.5.2)**:
    - **Zero API Key Operating Mode**: Connects via a dedicated local WebSocket bridge (`ws://127.0.0.1:58925`) to the MythicFrame BEI Chrome Extension, generating directly through your personal, authenticated browser sessions (Google Gemini Web & ChatGPT Web).
    - **100% Free & Unlimited**: Generates using the newest web-based Google **Imagen 3** engine without paid developer API billing.
-   - **Instant Account Quota Rotation**: Automatically routes requests across Google account slots (`/u/0/app`, `/u/1/app`, `/u/2/app`, etc.) with real-time quota telemetry and seamless switching.
+   - **Full-Size 2K Master Blob Interception**: Intercepts native high-resolution blobs via MAIN-world `page_hook.js` at `document_start`, bypassing compressed viewport preview downgrades.
+   - **Automated Gemini Library Failover Protocol**: Automatic asset recovery from `gemini.google.com/*/library` if DOM extraction is interrupted.
+   - **Instant Account Quota Rotation & Auto-Failover**: Automatically routes requests across Google account slots (`/u/0/app`, `/u/1/app`, `/u/2/app`, etc.) with real-time quota telemetry and seamless switching.
+   - **Active Tab Anti-Throttling & Tab Group Reuse**: Activates generation tabs automatically and reuses the `"MythicFrame BEI"` tab group across windows.
    - **Reference Asset Pipeline**: Fully supports multi-modal reference uploads with dynamic upload progress watchers and consent auto-dismissal.
    - *Full Reference:* See [`docs/BEI_MODE.md`](./BEI_MODE.md) and [`bei-extension/INSTALLATION_AND_USAGE_GUIDE.md`](../bei-extension/INSTALLATION_AND_USAGE_GUIDE.md).
 
 ### Backend & Data Persistence Layer
 - **Express Server** (`server.ts`):
   - Integrates Vite development middleware.
-  - Serves REST endpoints (`/api/assets`, `/api/config/gemini-key`).
+  - Serves REST endpoints (`/api/assets`, `/api/config/gemini-key`, `/api/bei/*`, `/api/system/shutdown`).
   - Persists API keys to `.env.local` without client-side exposure.
 - **SQLite Database** (`assets.db` via `better-sqlite3`):
   - Stores all historical asset metadata, generation timestamps, prompt logs, and Base64/DataURL images for instant local querying.
 
-### Model Context Protocol (MCP) Integration
+### Model Context Protocol (MCP v2.0.0) Integration
 MythicFrame embeds a dedicated Model Context Protocol server (`src/mcp/index.ts` & `mcp-server/`):
-- Exposes tools to external AI coding agents and LLMs:
-  - `prepare_illustration_prompt`
-  - `prepare_ui_reimagine_prompt`
-  - `prepare_clothes_prompt`
-  - `prepare_map_grid_prompt`
-  - `prepare_pose_studio_prompt`
-  - `prepare_sprite_sheet_prompts`
-  - `prepare_frame_prompt`
-  - `prepare_background_asset_prompt`
-  - `prepare_card_suggestions`
-- Allows autonomous agents to query prompt templates and trigger generation into the project's `outputs/` folder.
+- Connects autonomous AI coding agents (Antigravity, Claude Code, Cursor) directly into the studio workspace via Stdio transport.
+- **Exposes 24 production tools across 4 categories**:
+  - **Prompt Engineering Tools**:
+    - `prepare_illustration_prompt` (Character/scene prompts with 13 shot-distance presets, viewpoints, chibi, seed)
+    - `prepare_clothes_prompt` (Model vs asset ghost clothing, assembled vs spread layouts)
+    - `prepare_pose_studio_prompt` (Spatial translation from skeletal joint vectors)
+    - `prepare_ui_reimagine_prompt` (Game HUD/menu restyling prompts)
+    - `prepare_map_grid_prompt` (Top-down and isometric grid battle map prompts)
+    - `prepare_sprite_sheet_prompts` (Multi-pose directional frame prompts)
+    - `prepare_frame_prompt` (CCG borders, mana crystal, and banner prompts)
+    - `prepare_background_asset_prompt` (Scenery, texture, and UI backdrop prompts)
+    - `prepare_extract_clothes_prompt` (Biological eraser ghost equipment extraction)
+    - `prepare_card_suggestions_prompt` (Mechanic and lore name/effect suggestions)
+  - **Generation Execution Tools**:
+    - `mythic_bei_generate` (Zero-key image generation via active Gemini/ChatGPT browser tabs)
+    - `mythic_smart_generate` (Unified multi-engine router: auto, BEI, Gemini API, or prompt-only)
+    - `batch_studio_generate` (High-volume multi-subject and variation batch synthesis)
+  - **Lifecycle & Browser Management Tools**:
+    - `mythic_status` (Inspects server, BEI bridge, connected accounts, and tab states)
+    - `mythic_launch_server` (Auto-starts MythicFrame web UI and BEI bridge if offline)
+    - `launch_web_ui` (Launches studio web UI on localhost:3488)
+    - `mythic_open_tab` (Opens/focuses Gemini or ChatGPT Chrome tabs)
+    - `mythic_scan_accounts` (Discovers logged-in Google slots /u/0 through /u/3)
+    - `mythic_set_active_tab` (Activates generation tab in Chrome to prevent background throttling)
+    - `mythic_fetch_library_assets` (Fetches and auto-downloads assets from Gemini Web Library)
+    - `mythic_get_settings` (Queries active BEI configuration, tabs, and preferences)
+  - **Art Style Management Tools**:
+    - `mythic_list_art_styles` (Lists 45+ built-in styles and custom project styles)
+    - `mythic_apply_art_style` (Activates a style anchor in `mythic_project.json`)
+    - `mythic_create_art_style` (Saves a new custom art style into `mythic_project.json`)
 
 ### Quota, Cost, and Telemetry Tracking
 `src/services/quotaTrackerService.ts` provides enterprise-grade observability:
@@ -182,7 +205,20 @@ Access these pages using the **Project** collapsible section in the sidebar.
 ### Illustration Studio (`illustration`)
 - **Core Character & Concept Canvas**: Generates single-card character designs, creatures, or action scenes.
 - **Camera Viewpoints**: Select `Front`, `Back`, `Side`, `Three-Quarter`, `Top-Down`, `High-Angle`, `Low-Angle`, `Isometric`, or `Cinematic`.
-- **Framing Modes**: Select `Full-Body`, `Waist-Up`, `Bust`, or `Head-Only`.
+- **Cinematography Shot Framing (13 Ordered Presets)**:
+  - `ECU` (Extreme Close-Up) — Tiny facial detail (eye, lips)
+  - `BCU` (Big Close-Up) — Entire face from forehead to chin
+  - `CU` (Close-Up) — Head and face dominate; shoulders partially visible
+  - `MCU` (Medium Close-Up) — Head and upper chest
+  - `BUST` (Bust Shot) — Head, shoulders, and chest
+  - `MS` (Medium Shot) — Head to waist; waist-level props visible
+  - `MLS` (Medium Long Shot) — Head to just below knees
+  - `3/4` (Three-Quarter Shot) — Head to knees
+  - `AS` (American Shot) — Mid-thigh up; weapon holster framing
+  - `FS` (Full Shot) — Complete character head-to-toe
+  - `LS` (Long Shot) — Subject fully visible with surrounding scene context
+  - `ELS` (Extreme Long Shot) — Character small in expansive environment
+  - `VWS` (Very Wide Shot) — Panoramic environmental vista dominating subject
 - **Chibi Engine**:
   - Ratios: `1:1` Micro (2-head), `1:2` Chibi (3-head), `1:4` Deformed (4-head).
   - Head Style: `Moe` (ultra-cute large eyes) vs. `Realistic`.
@@ -198,7 +234,12 @@ Access these pages using the **Project** collapsible section in the sidebar.
 ### Pose Studio (`pose-studio`)
 - **Interactive 2D Skeletal Rig**: Visual canvas featuring 14 draggable joints:
   - Head, Neck, Shoulders (L/R), Elbows (L/R), Wrists (L/R), Pelvis, Knees (L/R), Ankles (L/R).
-- **Bones & Skeleton Preview**: Visual skeleton connecting parent-child joint hierarchies with interactive multi-joint selection and box-select.
+- **Biomechanical Constraints & IK Solver (`poseConstraints.ts`)**:
+  - Realistic bone length limits and natural joint angle clamping (prevents hyperextension of elbows and knees).
+  - 2-bone analytical Inverse Kinematics (IK) solver allowing intuitive manipulation of hands and feet.
+  - Viewport boundary safety clamps (`[3%, 97%]`) preventing joints from clipping out of the canvas.
+- **Zero-Latency Dragging**: Canvas renders at native monitor refresh rates (60–144 FPS) using `requestAnimationFrame` and local state isolation, eliminating global re-render stutter.
+- **Bones & Skeleton Preview**: Interactive multi-joint selection and visual hierarchy rendering.
 - **Rig-to-Prompt Translation**: Converts joint coordinates and bone angles into spatial natural-language instructions, forcing the AI to match the skeletal pose.
 - **Camera Look Target**: Interactive target reticle directing character gaze and head orientation.
 
@@ -338,15 +379,24 @@ $$\text{Final Prompt} = f(\text{User Prompt}, \text{Art Style}, \text{Setting}, 
 
 This ensures that an asset prompt like *"Health Potion"* generates an ornate glass vial in a High Fantasy project, but a glowing nanite syringe in a Cyberpunk project.
 
-### Pose Rigging Adherence Translation
+### Biomechanical Pose Rigging & IK Solver
 The Pose Studio uses normalized 2D joint coordinates to build spatial relationship descriptors:
 - Joint positions are calculated as percentages: $(x, y) \in [0, 100]$.
+- **Biomechanical Constraints (`poseConstraints.ts`)**:
+  - Enforces physiological bone lengths and joint angle clamps (prevents non-human joint rotation).
+  - 2-bone analytical Inverse Kinematics (IK) algorithm for wrists and ankles.
+  - Viewport boundary safety clamps $[3\%, 97\%]$.
 - Bone vectors (e.g., upper arm to forearm) are converted into relative angles.
 - The prompt compiler generates explicit spatial guidance (e.g., *"Subject's left arm raised high holding a sword at 45 degrees, right knee bent deeply in forward lunge"*).
 
 ### Continuity Flags System
 In Gacha Mode, the continuity engine maintains visual consistency across multiple generations:
 - When a flag like `Hair: Silver Braided` or `Armor: Gold Lion Crest` is enabled, its prompt tokens are locked and given priority weighting across all rarity variations.
+
+### In-App Dialog Engine
+MythicFrame eliminates intrusive browser-native popup interruptions (`alert()`, `confirm()`, `prompt()`):
+- Powered by `dialogService.ts` and `<InAppDialogModal />`.
+- Features dark glassmorphic styling, non-blocking asynchronous promises, custom confirmations, and seamless error recovery without halting page execution.
 
 ---
 
@@ -374,18 +424,21 @@ In Gacha Mode, the continuity engine maintains visual consistency across multipl
 | **Project** | `quota` | View | API health diagnostics, spend tracking, latency metrics |
 | **Project** | `settings` | View | Provider switching, API keys, global World Bible, Drive setup |
 | **Project** | `tutorials` | View | Interactive guides and documentation modules |
-| **Character** | `illustration` | Studio | Core character card art, framing, viewpoints, chibi engine |
+| **Character** | `illustration` | Studio | Core character card art, 13 framing presets, viewpoints, chibi engine |
 | **Character** | `sprite-sheet` | Studio | Multi-frame character animation grids |
-| **Character** | `pose-studio` | Studio | Interactive 14-joint 2D skeletal posing system |
+| **Character** | `sprite-strip` | Studio | Horizontal/vertical directional keyframe animation strips |
+| **Character** | `pose-studio` | Studio | Interactive 14-joint 2D skeletal posing with IK & biomechanics |
 | **Character** | `gacha` | Studio | Rarity tier progression (R, SR, SSR, UR) with continuity flags |
 | **Character** | `clothes` | Studio | Outfit designer, equipment spread sheets, clothing extraction |
 | **World & UI** | `background` | Studio | Scenery, terrain textures, and UI text backdrops |
 | **World & UI** | `bg-replace` | Studio | Transparent NEO matting and chroma key replacement |
 | **World & UI** | `frame` | Studio | Card frames, borders, mana sockets, and banner slots |
 | **World & UI** | `ui-reimagine` | Studio | Game HUD, menu layouts, and theme redesign |
+| **World & UI** | `ui-scene` | Studio | Full UI mockup layout composition |
 | **World & UI** | `map-grid` | Studio | Top-down and isometric dungeon/world map generator |
 | **Production** | `pixelize` | Studio | 8-bit, 16-bit, 32-bit pixel art downsampling and palette mapping |
 | **Production** | `resize` | Studio | Smart upscaling, aspect ratio expansion, safe-zone crop |
 | **Production** | `animation` | Studio | Frame-by-frame animation timeline with onion skinning |
 | **Production** | `batch` | Studio | Automated bulk processing, CSV import, variation generation |
 | **Production** | `fullcard` | Studio | Complete TCG card composer with drag-and-drop elements |
+

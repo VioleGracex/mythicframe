@@ -27,7 +27,7 @@ This guide provides instructions for both **Humans** (manual setup and daily wor
    <path-to-mythicframe>/bei-extension
    ```
 6. The **MythicFrame BEI** extension card will appear in your extensions list:
-   * **Version:** `v1.4.0` (or higher)
+   * **Version:** `v1.5.2` (or higher)
    * **Permissions:** Storage, Scripting, Tabs, TabGroups
    * **Badge:** If the MythicFrame server is running, the extension icon badge will turn purple and display **ON**. If the server is offline, it will display **OFF**.
 
