@@ -1,5 +1,5 @@
 
-export type UIMode = 'dashboard' | 'library' | 'settings' | 'tutorials' | 'illustration' | 'animation' | 'resize' | 'clothes' | 'bg-replace' | 'pixelize' | 'frame' | 'background' | 'fullcard' | 'gacha' | 'ui-reimagine' | 'ui-scene' | 'style-library' | 'pose-studio' | 'map-grid' | 'sprite-sheet' | 'sprite-strip' | 'batch' | 'downloads' | 'quota';
+export type UIMode = 'dashboard' | 'library' | 'settings' | 'tutorials' | 'illustration' | 'animation' | 'resize' | 'clothes' | 'bg-replace' | 'pixelize' | 'frame' | 'background' | 'fullcard' | 'gacha' | 'ui-reimagine' | 'ui-scene' | 'style-library' | 'pose-studio' | 'map-grid' | 'sprite-sheet' | 'sprite-strip' | 'batch' | 'downloads' | 'quota' | 'music' | 'video';
 
 export interface BatchItem {
   id: string;
@@ -35,7 +35,13 @@ export type BEITabMode = 'same_window_group' | 'new_window_group' | 'background_
 export interface BEIAccountQuota {
   slot: number;
   target: BEITarget;
-  tier?: 'free' | 'pro';
+  tier?: 'free' | 'advanced' | 'pro' | 'workspace';
+  capabilities?: {
+    image: boolean;
+    video: boolean;
+    music: boolean;
+    text: boolean;
+  };
   callsToday: number;
   dailyLimit: number;
   status: 'ready' | 'high_usage' | 'rate_limited';

@@ -1,5 +1,5 @@
 export const APP_NAME = "MythicFrame";
-export const APP_VERSION = "1.6.1";
+export const APP_VERSION = "1.6.2";
 
 export const MODE_CONFIG = {
   dashboard: { title: "Dashboard", icon: "fa-chart-pie", description: "Project overview and stats." },
@@ -25,5 +25,7 @@ export const MODE_CONFIG = {
   "map-grid": { title: "Map Grid Generator", icon: "fa-map", description: "Generate 2D maps with custom grid and perspective." },
   "sprite-sheet": { title: "Sprite Sheet Studio", icon: "fa-table-cells", description: "Generate consistent character poses and variations." },
   "sprite-strip": { title: "Animation Strip", icon: "fa-film", description: "Generate a row of animation frames in a single image." },
-  batch: { title: "Batch Studio", icon: "fa-layer-group", description: "Generate multiple images from a file list." }
+  batch: { title: "Batch Studio", icon: "fa-layer-group", description: "Generate multiple images from a file list." },
+  music: { title: "Game Music & Audio", icon: "fa-music", description: "Generate game soundtracks, ambient loops, and foley SFX." },
+  video: { title: "Cutscenes & Video VFX", icon: "fa-video", description: "Generate cinematic game cutscenes and visual effects." }
 };

@@ -31,6 +31,7 @@ import { useGeneration } from './useGeneration';
 import { useExportHistory } from './useExportHistory';
 import { useLanguage } from '../i18n/LanguageContext';
 import { useStyleUsage } from './useStyleUsage';
+import { useCanvasHistory } from './useCanvasHistory';
 import { buildFullPromptBundle, PromptExportBundle } from '../utils/promptExporter';
 
 export const useAppEngine = () => {
@@ -51,6 +52,14 @@ export const useAppEngine = () => {
     history, setHistory, currentHistoryEntry, setCurrentHistoryEntry,
     addHistoryEntry, handleRestore, handleClearHistory, handleDeleteHistoryItem, handleRenameHistoryItem, createHistoryEntry
   } = useHistory(setMode, updateActiveTab);
+
+  const {
+    pushCanvasSnapshot,
+    handleCanvasUndo,
+    handleCanvasRedo,
+    canUndo: canCanvasUndo,
+    canRedo: canCanvasRedo
+  } = useCanvasHistory(activeTab, updateActiveTab);
 
   const [apiKeyReady, setApiKeyReady] = useState(false);
   const [activeProvider, setActiveProviderState] = useState<AIProvider>(() => getActiveAIProvider());
@@ -663,11 +672,29 @@ export const useAppEngine = () => {
     resolve: (response: { action: 'retry' | 'sanitize' | 'skip' | 'abort' | 'edit', newPrompt?: string }) => void;
   } | null>(null);
 
+  const isBatchPausedRef = useRef(false);
+  const [isBatchPaused, setIsBatchPaused] = useState(false);
+
+  const handlePauseBatch = () => {
+    isBatchPausedRef.current = true;
+    setIsBatchPaused(true);
+    generation.setStatusMessage("Pausing batch queue after active item completes...");
+  };
+
+  const handleResumeBatch = () => {
+    isBatchPausedRef.current = false;
+    setIsBatchPaused(false);
+    handleGenerateBatch();
+  };
+
   const handleGenerateBatch = async () => {
     if (generation.isGenerating) return;
     const queue = activeTab.batchQueue || [];
     const pending = queue.filter(i => i.status === 'pending' && i.enabled && !i.isSeriesTemplate);
     if (pending.length === 0) return;
+
+    isBatchPausedRef.current = false;
+    setIsBatchPaused(false);
 
     // Sort pending items by priority: Full Body > Waist Up > Chibi > Item > Texture > Icon > General
     const getPriority = (n: string) => {
@@ -720,7 +747,7 @@ export const useAppEngine = () => {
       });
 
       for (const item of sortedPending) {
-        if (abortController.signal.aborted) break;
+        if (abortController.signal.aborted || isBatchPausedRef.current) break;
 
         const coreName = item.name.split('[')[0].trim();
         const effectiveReferences = [...activeTab.referenceAssets];
@@ -882,7 +909,11 @@ export const useAppEngine = () => {
       }
     } finally {
       generation.setIsGenerating(false);
-      generation.setStatusMessage('');
+      if (isBatchPausedRef.current) {
+        generation.setStatusMessage('Batch queue paused. Click Resume to continue.');
+      } else {
+        generation.setStatusMessage('');
+      }
       generation.abortControllerRef.current = null;
       
       // Auto-save batch zip right after ending the loop using the latest queue
@@ -1127,6 +1158,8 @@ export const useAppEngine = () => {
     handleGenerateFrame: generation.handleGenerate, handleGenerateAnimation: generation.handleGenerate, handleCancel: generation.handleCancel,
     handleGenerateAll: generation.handleGenerate, handleGenerateAllBgReplace, handleGenerateAllPixelize, handleExportAllResize,
     handleGenerateBatch, reorderBatchItem, batchIntervention,
+    handlePauseBatch, handleResumeBatch, isBatchPaused,
+    pushCanvasSnapshot, handleCanvasUndo, handleCanvasRedo, canCanvasUndo, canCanvasRedo,
     useProModel, setUseProModel, isRightMinimized, setIsRightMinimized, batchSize, setBatchSize,
     appError, setAppError, showError,
     availableModels, isLoadingModels, handleFetchModels, activeModel, handleSelectModel,

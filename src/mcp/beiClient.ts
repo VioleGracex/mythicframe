@@ -397,7 +397,7 @@ export async function getMythicSettings(): Promise<any> {
       bridgeRunning: Boolean(statusData),
       bridgePort: BRIDGE_PORT,
       webPort: WEB_PORT,
-      extensionVersion: statusData?.extensionVersion || '1.5.2',
+      extensionVersion: statusData?.extensionVersion || '1.5.3',
       connected: Boolean(statusData?.connected),
       accounts: statusData?.accounts || [],
       tabs: statusData?.tabs || [],

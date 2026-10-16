@@ -230,9 +230,115 @@ document.addEventListener('DOMContentLoaded', () => {
   loadPerformanceMetrics();
 
   // Localhost Launchers
-  document.getElementById('openStudioBtn').addEventListener('click', () => {
-    chrome.tabs.create({ url: `http://localhost:${STUDIO_PORT}` });
-  });
+  async function launchOrOpenStudio() {
+    const btn = document.getElementById('openStudioBtn');
+    const feedback = document.getElementById('launcherFeedback');
+    const originalHtml = btn.innerHTML;
+
+    const showFeedback = (text, isError = false) => {
+      if (feedback) {
+        feedback.textContent = text;
+        feedback.style.display = 'block';
+        feedback.style.color = isError ? '#f87171' : '#a78bfa';
+      }
+    };
+
+    // 1. First probe if MythicFrame Studio is already alive and running
+    let isAlive = false;
+    try {
+      const res = await fetch(`http://127.0.0.1:${STUDIO_PORT}/api/bei/status`, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(1000)
+      });
+      if (res.ok) isAlive = true;
+    } catch (e) {}
+
+    if (!isAlive) {
+      try {
+        const res2 = await fetch(`http://localhost:${STUDIO_PORT}/api/bei/status`, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(1000)
+        });
+        if (res2.ok) isAlive = true;
+      } catch (e) {}
+    }
+
+    // If already alive: focus or open existing studio tab immediately
+    if (isAlive) {
+      chrome.tabs.query({ url: [`*://localhost:${STUDIO_PORT}/*`, `*://127.0.0.1:${STUDIO_PORT}/*`] }, (tabs) => {
+        if (tabs && tabs.length > 0) {
+          chrome.tabs.update(tabs[0].id, { active: true });
+          if (tabs[0].windowId) chrome.windows.update(tabs[0].windowId, { focused: true });
+        } else {
+          chrome.tabs.create({ url: `http://localhost:${STUDIO_PORT}` });
+        }
+      });
+      return;
+    }
+
+    // 2. Server is offline: initiate localhost launcher via Windows protocol handler
+    btn.disabled = true;
+    btn.innerHTML = `<span class="btn-icon">⏳</span><span>Starting Server...</span>`;
+    showFeedback('Launching MythicFrame backend server (mythicframe://)...');
+
+    try {
+      const frame = document.createElement('iframe');
+      frame.style.display = 'none';
+      frame.src = 'mythicframe://launch';
+      document.body.appendChild(frame);
+      setTimeout(() => frame.remove(), 4000);
+    } catch (e) {
+      console.warn('Protocol launch iframe error:', e);
+    }
+
+    // Also try native messaging host if registered
+    try {
+      chrome.runtime.sendNativeMessage('com.mythicframe.launcher', { action: 'launch' }, () => {
+        chrome.runtime.lastError;
+      });
+    } catch (e) {}
+
+    // 3. Poll localhost health until port 3488 answers with 200 OK
+    const startTime = Date.now();
+    const pollTimer = setInterval(async () => {
+      let ready = false;
+      try {
+        const ping = await fetch(`http://127.0.0.1:${STUDIO_PORT}/api/bei/status`, {
+          method: 'GET',
+          signal: AbortSignal.timeout(800)
+        });
+        if (ping.ok) ready = true;
+      } catch (e) {}
+
+      if (ready) {
+        clearInterval(pollTimer);
+        btn.innerHTML = `<span class="btn-icon">✓</span><span>Ready! Opening...</span>`;
+        showFeedback('Server online! Opening MythicFrame Studio...');
+        setTimeout(() => {
+          chrome.tabs.create({ url: `http://localhost:${STUDIO_PORT}` });
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          checkBridgeStatus();
+          setTimeout(() => { if (feedback) feedback.style.display = 'none'; }, 3000);
+        }, 700);
+        return;
+      }
+
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      btn.innerHTML = `<span class="btn-icon">⏳</span><span>Starting Server (${elapsed}s)...</span>`;
+
+      if (elapsed > 25) {
+        clearInterval(pollTimer);
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+        showFeedback('⚠️ Server not responding. Run run.bat in project folder once to start and register 1-click launcher.', true);
+      }
+    }, 900);
+  }
+
+  document.getElementById('openStudioBtn').addEventListener('click', launchOrOpenStudio);
 
   document.getElementById('openBridgeBtn').addEventListener('click', () => {
     chrome.tabs.create({ url: `http://localhost:${BRIDGE_PORT}/api/bei/status` });
@@ -253,6 +359,64 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Performance / Memory Management
   document.getElementById('hibernateTabsBtn')?.addEventListener('click', hibernateInactiveTabs);
+
+  // Selector Health Diagnostic
+  async function runSelectorDiagnostic() {
+    const btn = document.getElementById('runDiagnosticBtn');
+    const resultsDiv = document.getElementById('diagnosticResults');
+    const hint = document.getElementById('diagnosticHint');
+    const diagComposer = document.getElementById('diagComposer');
+    const diagSend = document.getElementById('diagSend');
+    const diagUpload = document.getElementById('diagUpload');
+
+    if (btn) btn.textContent = 'Testing...';
+    if (resultsDiv) resultsDiv.style.display = 'grid';
+
+    try {
+      const tabs = await chrome.tabs.query({ url: '*://gemini.google.com/*' });
+      if (!tabs || tabs.length === 0) {
+        if (hint) hint.textContent = '⚠️ No Google Gemini tab open in Chrome. Open Gemini first.';
+        if (diagComposer) { diagComposer.textContent = 'Tab Missing'; diagComposer.style.color = '#f87171'; }
+        if (diagSend) { diagSend.textContent = 'Tab Missing'; diagSend.style.color = '#f87171'; }
+        if (diagUpload) { diagUpload.textContent = 'Tab Missing'; diagUpload.style.color = '#f87171'; }
+        if (btn) btn.textContent = 'Run Test';
+        return;
+      }
+
+      const activeGeminiTab = tabs[0];
+      chrome.tabs.sendMessage(activeGeminiTab.id, { action: 'CHECK_SELECTOR_HEALTH' }, (resp) => {
+        if (btn) btn.textContent = 'Run Test';
+        if (chrome.runtime.lastError || !resp || !resp.selectors) {
+          if (hint) hint.textContent = '⚠️ Could not reach Gemini tab. Refresh the tab or wait for it to load.';
+          return;
+        }
+        const s = resp.selectors;
+        if (diagComposer) {
+          diagComposer.textContent = s.composer.ok ? '✓ OK' : '✗ Missed';
+          diagComposer.style.color = s.composer.ok ? '#4ade80' : '#f87171';
+        }
+        if (diagSend) {
+          diagSend.textContent = s.sendButton.ok ? '✓ OK' : '✗ Missed';
+          diagSend.style.color = s.sendButton.ok ? '#4ade80' : '#f87171';
+        }
+        if (diagUpload) {
+          diagUpload.textContent = s.uploadTrigger.ok ? '✓ OK' : '✗ Missed';
+          diagUpload.style.color = s.uploadTrigger.ok ? '#4ade80' : '#f87171';
+        }
+        if (hint) {
+          const allOk = s.composer.ok && s.sendButton.ok && s.uploadTrigger.ok;
+          hint.textContent = allOk 
+            ? `✓ All DOM selectors healthy on Tab #${activeGeminiTab.id}. Ready for generation!`
+            : `⚠️ Some selectors missed. Dynamic multi-fallbacks are engaged.`;
+        }
+      });
+    } catch (err) {
+      if (btn) btn.textContent = 'Run Test';
+      if (hint) hint.textContent = `Diagnostic error: ${err.message}`;
+    }
+  }
+
+  document.getElementById('runDiagnosticBtn')?.addEventListener('click', runSelectorDiagnostic);
 
   // Reconnect & Refresh
   document.getElementById('reconnectBtn').addEventListener('click', () => {

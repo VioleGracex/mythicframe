@@ -549,11 +549,50 @@ async function extractTabEmail(tabId, target, accountSlot = 0) {
       if (results && results.length > 0) {
         for (const r of results) {
           if (r && r.result && !isSystemEmail(r.result)) {
-            tabEmailsCache.set(tabId, r.result);
+            const emailFound = r.result;
+            tabEmailsCache.set(tabId, emailFound);
             if (target === "gemini") {
-              knownGoogleAccounts.set(accountSlot, { slot: accountSlot, email: r.result, name: r.result });
+              try {
+                chrome.scripting.executeScript({
+                  target: { tabId },
+                  func: () => {
+                    if (typeof window.__MYTHIC_BEI_GET_TIER__ === 'function') {
+                      return window.__MYTHIC_BEI_GET_TIER__();
+                    }
+                    const advBadge = document.querySelector('.bard-advanced-logo, [aria-label*="Gemini Advanced" i], [data-test-id*="advanced"]');
+                    const isAdv = !!advBadge;
+                    return { tier: isAdv ? 'advanced' : 'free', capabilities: { image: true, video: isAdv, music: true, text: true } };
+                  }
+                }).then(tierRes => {
+                  const tData = tierRes?.[0]?.result || { tier: 'free', capabilities: { image: true, video: false, music: true, text: true } };
+                  knownGoogleAccounts.set(accountSlot, {
+                    slot: accountSlot,
+                    email: emailFound,
+                    name: emailFound,
+                    tier: tData.tier,
+                    capabilities: tData.capabilities
+                  });
+                  persistKnownAccounts();
+                }).catch(() => {
+                  knownGoogleAccounts.set(accountSlot, {
+                    slot: accountSlot,
+                    email: emailFound,
+                    name: emailFound,
+                    tier: 'free',
+                    capabilities: { image: true, video: false, music: true, text: true }
+                  });
+                });
+              } catch (e) {
+                knownGoogleAccounts.set(accountSlot, {
+                  slot: accountSlot,
+                  email: emailFound,
+                  name: emailFound,
+                  tier: 'free',
+                  capabilities: { image: true, video: false, music: true, text: true }
+                });
+              }
             }
-            return r.result;
+            return emailFound;
           }
         }
       }

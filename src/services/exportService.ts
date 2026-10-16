@@ -193,6 +193,238 @@ export const exportResizeBatch = async (queue: ResizeItem[]) => {
   downloadBlob(content, `resize_batch_${timestamp}.zip`);
 };
 
+export const generateUnitySpriteSheetMeta = (
+  sheetWidth: number,
+  sheetHeight: number,
+  frameWidth: number,
+  frameHeight: number,
+  columns: number,
+  totalFrames: number,
+  baseName: string
+): string => {
+  let spriteSheetEntries = '';
+  
+  for (let i = 0; i < totalFrames; i++) {
+    const col = i % columns;
+    const row = Math.floor(i / columns);
+    const unityY = sheetHeight - (row + 1) * frameHeight;
+    const unityX = col * frameWidth;
+    const frameId = `${baseName}_${i}`;
+
+    spriteSheetEntries += `    - serializedVersion: 2
+      name: ${frameId}
+      rect:
+        serializedVersion: 2
+        x: ${unityX}
+        y: ${unityY}
+        width: ${frameWidth}
+        height: ${frameHeight}
+      alignment: 0
+      pivot: {x: 0.5, y: 0.5}
+      border: {x: 0, y: 0, z: 0, w: 0}
+      outline: []
+      physicsShape: []
+      tessellationDetail: 0
+      bones: []
+      spriteID: ${Math.random().toString(16).substring(2, 34).padEnd(32, '0')}
+      internalID: ${10000000 + i}
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
+`;
+  }
+
+  return `fileFormatVersion: 2
+guid: ${Math.random().toString(16).substring(2, 34).padEnd(32, '0')}
+TextureImporter:
+  internalIDToNameTable: []
+  externalObjects: {}
+  serializedVersion: 13
+  mipmaps:
+    mipMapMode: 0
+    enableMipMap: 0
+    sRGBTexture: 1
+    linearTexture: 0
+    fadeOut: 0
+    borderMipMap: 0
+    mipMapsPreservesCoverage: 0
+    alphaTestReferenceValue: 0.5
+    mipMapFadeDistanceStart: 1
+    mipMapFadeDistanceEnd: 3
+  bumpmap:
+    convertToNormalMap: 0
+    externalNormalMap: 0
+    heightScale: 0.25
+    normalMapFilter: 0
+  isReadable: 0
+  streamingMipmaps: 0
+  streamingMipmapsPriority: 0
+  vTOnly: 0
+  ignoreMasterTextureLimit: 0
+  grayScaleToAlpha: 0
+  generateCubemap: 6
+  cubemapConvolution: 0
+  seamlessCubemap: 0
+  textureFormat: 1
+  maxTextureSize: 4096
+  textureSettings:
+    serializedVersion: 2
+    filterMode: 0
+    aniso: 1
+    mipBias: 0
+    wrapU: 1
+    wrapV: 1
+    wrapW: 1
+  nPOTScale: 0
+  lightmap: 0
+  compressionQuality: 50
+  spriteMode: 2
+  spriteExtrude: 1
+  spriteMeshType: 1
+  alignment: 0
+  spritePivot: {x: 0.5, y: 0.5}
+  spritePixelsToUnits: 100
+  spriteBorder: {x: 0, y: 0, z: 0, w: 0}
+  spriteGenerateFallbackPhysicsShape: 1
+  alphaUsage: 1
+  alphaIsTransparency: 1
+  spriteTessellationDetail: -1
+  textureType: 8
+  textureShape: 1
+  singleChannelComponent: 0
+  flipbook: 0
+  platformSettings: []
+  spriteSheet:
+    serializedVersion: 2
+    sprites:
+${spriteSheetEntries}
+    outline: []
+    physicsShape: []
+    bones: []
+    spriteID: 
+    internalID: 0
+    vertices: []
+    indices: 
+    edges: []
+    weights: []
+    secondaryTextures: []
+    nameFileIdTable: {}
+  spritePackingTag: 
+  pSDRemoveMatte: 0
+  pSDShowRemoveMatteOption: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+`;
+};
+
+export const generateGodotSpriteFramesTres = (
+  framesCount: number,
+  baseName: string,
+  fps: number = 8
+): string => {
+  let extResources = '';
+  let frameRefs = '';
+
+  for (let i = 0; i < framesCount; i++) {
+    const resId = `ext_frame_${i + 1}`;
+    extResources += `[ext_resource type="Texture2D" path="res://${baseName}/${i + 1}_frame.png" id="${resId}"]\n`;
+    frameRefs += `{\n"duration": 1.0,\n"texture": ExtResource("${resId}")\n}${i < framesCount - 1 ? ',' : ''}\n`;
+  }
+
+  return `[gd_resource type="SpriteFrames" format=3]
+
+${extResources}
+[resource]
+animations = [{
+"frames": [
+${frameRefs}],
+"loop": true,
+"name": &"default",
+"speed": ${fps}.0
+}]
+`;
+};
+
+export const generatePrintReadyCardSheet = async (
+  cardImageUrls: string[],
+  cardWidthPx: number = 750,
+  cardHeightPx: number = 1050,
+  cols: number = 3,
+  rows: number = 3
+): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const margin = 80;
+    const gap = 24;
+    const sheetW = margin * 2 + cols * cardWidthPx + (cols - 1) * gap;
+    const sheetH = margin * 2 + rows * cardHeightPx + (rows - 1) * gap;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = sheetW;
+    canvas.height = sheetH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return reject(new Error('No canvas context'));
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, sheetW, sheetH);
+
+    const maxCards = cols * rows;
+    const itemsToDraw = cardImageUrls.slice(0, maxCards);
+    let loaded = 0;
+
+    if (itemsToDraw.length === 0) {
+      return resolve(canvas.toDataURL('image/png'));
+    }
+
+    itemsToDraw.forEach((url, idx) => {
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      const x = margin + col * (cardWidthPx + gap);
+      const y = margin + row * (cardHeightPx + gap);
+
+      const img = new Image();
+      img.crossOrigin = 'Anonymous';
+      img.onload = () => {
+        ctx.drawImage(img, x, y, cardWidthPx, cardHeightPx);
+
+        // Crop marks
+        ctx.strokeStyle = '#64748B';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 6]);
+
+        const tick = 20;
+        // TL
+        ctx.beginPath(); ctx.moveTo(x - tick, y); ctx.lineTo(x, y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, y - tick); ctx.lineTo(x, y); ctx.stroke();
+        // TR
+        ctx.beginPath(); ctx.moveTo(x + cardWidthPx, y); ctx.lineTo(x + cardWidthPx + tick, y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x + cardWidthPx, y - tick); ctx.lineTo(x + cardWidthPx, y); ctx.stroke();
+        // BL
+        ctx.beginPath(); ctx.moveTo(x - tick, y + cardHeightPx); ctx.lineTo(x, y + cardHeightPx); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, y + cardHeightPx); ctx.lineTo(x, y + cardHeightPx + tick); ctx.stroke();
+        // BR
+        ctx.beginPath(); ctx.moveTo(x + cardWidthPx, y + cardHeightPx); ctx.lineTo(x + cardWidthPx + tick, y + cardHeightPx); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x + cardWidthPx, y + cardHeightPx); ctx.lineTo(x + cardWidthPx, y + cardHeightPx + tick); ctx.stroke();
+
+        ctx.setLineDash([]);
+
+        loaded++;
+        if (loaded === itemsToDraw.length) {
+          resolve(canvas.toDataURL('image/png'));
+        }
+      };
+      img.onerror = () => {
+        loaded++;
+        if (loaded === itemsToDraw.length) {
+          resolve(canvas.toDataURL('image/png'));
+        }
+      };
+      img.src = url;
+    });
+  });
+};
+
 export const exportSpriteSheet = async (frames: any[], baseName: string) => {
   const completedFrames = frames.filter(f => f.url && f.status === 'done');
   if (completedFrames.length === 0) return;
@@ -214,14 +446,31 @@ export const exportSpriteSheet = async (frames: any[], baseName: string) => {
     }
   }
 
-  // Add unified grid image
+  // Add unified grid image + Game Engine Presets (Unity .meta & Godot .tres)
   try {
     const imageUrls = completedFrames.map(f => f.url);
-    const gridDataUrl = await generateSpriteSheetGrid(imageUrls);
+    const gridDataUrl = await generateSpriteSheetGrid(imageUrls, 4);
     const gridBlob = await urlToBlob(gridDataUrl);
     folder.file(`${baseName}_grid.png`, gridBlob);
+
+    // Get frame dimensions from the first frame
+    const firstImg = new Image();
+    firstImg.src = completedFrames[0].url;
+    await new Promise((res) => { firstImg.onload = res; firstImg.onerror = res; });
+    const frameW = firstImg.width || 256;
+    const frameH = firstImg.height || 256;
+    const sheetW = frameW * 4;
+    const sheetH = frameH * Math.ceil(completedFrames.length / 4);
+
+    // Unity 2D Meta Preset
+    const unityMeta = generateUnitySpriteSheetMeta(sheetW, sheetH, frameW, frameH, 4, completedFrames.length, baseName);
+    folder.file(`${baseName}_grid.png.meta`, unityMeta);
+
+    // Godot 4.x SpriteFrames Preset
+    const godotTres = generateGodotSpriteFramesTres(completedFrames.length, baseName, 8);
+    folder.file(`${baseName}_animations.tres`, godotTres);
   } catch (e) {
-    console.error("Failed to generate sprite sheet grid for ZIP", e);
+    console.error("Failed to generate sprite sheet presets for ZIP", e);
   }
 
   const content = await zip.generateAsync({ type: "blob" });

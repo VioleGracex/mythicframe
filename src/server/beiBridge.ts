@@ -19,7 +19,13 @@ export interface BEIAccountInfo {
   slot: number;
   email: string;
   name?: string;
-  tier?: 'free' | 'pro';
+  tier?: 'free' | 'advanced' | 'pro' | 'workspace';
+  capabilities?: {
+    image: boolean;
+    video: boolean;
+    music: boolean;
+    text: boolean;
+  };
 }
 
 export interface BEIPayloadStatus {
@@ -105,14 +111,16 @@ export class BEIBridgeServer {
               ...this.knownAccounts[idx],
               email: email || this.knownAccounts[idx].email,
               name: (acc.name && !acc.name.includes('example.com')) ? acc.name : (email || this.knownAccounts[idx].name),
-              tier: acc.tier || this.knownAccounts[idx].tier
+              tier: acc.tier || this.knownAccounts[idx].tier || 'free',
+              capabilities: acc.capabilities || this.knownAccounts[idx].capabilities || { image: true, video: acc.tier === 'advanced', music: true, text: true }
             };
           } else {
             this.knownAccounts.push({
               slot: acc.slot,
               email,
               name: (acc.name && !acc.name.includes('example.com')) ? acc.name : (email || `Account ${acc.slot + 1}`),
-              tier: acc.tier || 'pro'
+              tier: acc.tier || 'free',
+              capabilities: acc.capabilities || { image: true, video: acc.tier === 'advanced', music: true, text: true }
             });
           }
         }
@@ -134,7 +142,8 @@ export class BEIBridgeServer {
             slot,
             email: tab.email,
             name: tab.email,
-            tier: 'pro'
+            tier: 'free',
+            capabilities: { image: true, video: false, music: true, text: true }
           });
         }
       }
@@ -146,7 +155,7 @@ export class BEIBridgeServer {
   private pendingActiveTabRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private pendingLibraryRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private lastHeartbeat = Date.now();
-  private extensionVersion = '1.5.2';
+  private extensionVersion = '1.5.3';
   private projectDir = process.cwd();
   public latestProgress: Record<string, { step: string; detail: string; timestamp: number }> = {};
   public globalProgress: { step: string; detail: string; timestamp: number } | null = null;
@@ -653,6 +662,84 @@ export class BEIBridgeServer {
         const job = this.pendingJobs.get(jobId)!;
         clearTimeout(job.timeoutTimer);
         this.pendingJobs.delete(jobId);
+
+        const mediaType = data.mediaType || (data.video || data.videoUrl ? 'video' : (data.audio || data.audioUrl ? 'audio' : 'image'));
+        const video = data.video || data.videoUrl;
+        const audio = data.audio || data.audioUrl;
+
+        // Video Generation Handling (Veo / HTML5 Video)
+        if (mediaType === 'video' && video) {
+          let videoUrl = video;
+          if (typeof video === 'string' && video.startsWith('data:video/')) {
+            try {
+              const videoDir = path.join(process.cwd(), 'outputs', 'video');
+              if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
+              const fileName = `video_${Date.now()}_${jobId}.mp4`;
+              const filePath = path.join(videoDir, fileName);
+              const b64Data = video.split(',')[1];
+              fs.writeFileSync(filePath, Buffer.from(b64Data, 'base64'));
+              videoUrl = `/outputs/video/${fileName}`;
+            } catch (vErr) {
+              console.warn('[MythicFrame BEI Bridge] Error saving video file:', vErr);
+            }
+          }
+          this.broadcastProgress({
+            jobId,
+            step: 'completed',
+            detail: 'Video generation completed successfully!'
+          });
+          job.resolve({
+            success: true,
+            mediaType: 'video',
+            video: videoUrl,
+            image: videoUrl,
+            jobId,
+            metadata: {
+              target: job.target,
+              mediaType: 'video',
+              fullPrompt: data.fullPrompt || job.prompt,
+              accountSlot: data.accountSlot
+            }
+          });
+          return;
+        }
+
+        // Music / Audio Generation Handling
+        if (mediaType === 'audio' && audio) {
+          let audioUrl = audio;
+          if (typeof audio === 'string' && audio.startsWith('data:audio/')) {
+            try {
+              const musicDir = path.join(process.cwd(), 'outputs', 'music');
+              if (!fs.existsSync(musicDir)) fs.mkdirSync(musicDir, { recursive: true });
+              const fileName = `audio_${Date.now()}_${jobId}.mp3`;
+              const filePath = path.join(musicDir, fileName);
+              const b64Data = audio.split(',')[1];
+              fs.writeFileSync(filePath, Buffer.from(b64Data, 'base64'));
+              audioUrl = `/outputs/music/${fileName}`;
+            } catch (aErr) {
+              console.warn('[MythicFrame BEI Bridge] Error saving audio file:', aErr);
+            }
+          }
+          this.broadcastProgress({
+            jobId,
+            step: 'completed',
+            detail: 'Audio generation completed successfully!'
+          });
+          job.resolve({
+            success: true,
+            mediaType: 'audio',
+            audio: audioUrl,
+            image: audioUrl,
+            jobId,
+            metadata: {
+              target: job.target,
+              mediaType: 'audio',
+              fullPrompt: data.fullPrompt || job.prompt,
+              accountSlot: data.accountSlot
+            }
+          });
+          return;
+        }
 
         let image = data.image || data.imageUrl || data.imageData;
         if (Array.isArray(image) && image.length > 0) {

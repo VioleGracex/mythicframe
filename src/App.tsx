@@ -22,6 +22,8 @@ import Tutorials from './components/views/Tutorials';
 import StyleLibrary from './components/views/StyleLibrary';
 import Downloads from './components/views/Downloads';
 import QuotaInspector from './components/views/QuotaInspector';
+import MusicStudio from './components/views/MusicStudio';
+import VideoStudio from './components/views/VideoStudio';
 
 export default function App() {
   const engine = useAppEngine();
@@ -166,6 +168,12 @@ export default function App() {
                   apiKeyReady={engine.apiKeyReady} 
                   onNavigate={engine.setMode} 
                />
+             )}
+             {engine.mode === 'music' && (
+               <MusicStudio onNavigate={engine.setMode} />
+             )}
+             {engine.mode === 'video' && (
+               <VideoStudio onNavigate={engine.setMode} />
              )}
           </>
         )}

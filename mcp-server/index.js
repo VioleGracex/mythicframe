@@ -253,7 +253,102 @@ var normalizeFramingId = (val) => {
   return clean;
 };
 
+// src/constants/artStyles.ts
+var ART_STYLES = [
+  { id: "none", name: "No Style", promptSnippet: "", description: "Uses only your prompt without any additional stylistic bias.", category: "Other" },
+  { id: "kingdoms_divided_char", name: "Kingdoms Divided (Feudal Fantasy)", promptSnippet: ", kingdoms divided character art style, visual novel character dialogue sprite, detailed anime-influenced medieval fantasy illustration, painterly digital art, soft clean linework, tactile cloth and leather textures, mature refined character design, natural diffused ambient daylight, soft realistic shadows, no harsh rim light, isolated on solid white background", description: "Tactile medieval feudal fantasy character art with stylized anime facial aesthetics, rich painterly fabric textures, and soft natural daylight.", category: "Game Art", exampleUrl: "/styles/kingdoms_divided_character.png" },
+  { id: "pixel_art", name: "2D Pixel Art (16-bit)", promptSnippet: ", pixel art style, 16-bit, retro game asset, dithering, vibrant", description: "Retro 16-bit game aesthetic with visible pixels and dithering.", category: "Retro" },
+  { id: "80s_fantasy", name: "80s Dark Fantasy", promptSnippet: ", 80s dark fantasy style, frank frazetta style, boris vallejo style, oil painting, dramatic muscles, epic poses, misty background, retro fantasy cover art", description: "Retro fantasy cover art with dramatic muscles, epic poses, and mist.", category: "Retro" },
+  { id: "anime", name: "Anime / Manga", promptSnippet: ", anime style, cel shaded, vibrant colors, studio ghibli inspired, high quality", description: "Clean lines, cel-shading, and vibrant colors inspired by high-quality Japanese animation.", category: "Anime/Manga" },
+  { id: "anime_game", name: "Anime Game Style", promptSnippet: ", anime game style, genshin impact aesthetic, honkai star rail style, vibrant cel-shaded, clean gradients, soft shadows, high-quality 3d anime render look, polished surfaces", description: "Vibrant and clean cel-shaded look matching high-budget modern anime games like Genshin Impact.", category: "Game Art" },
+  { id: "arknights_tactical", name: "Arknights Style", promptSnippet: ", arknights style, tactical anime aesthetic, techwear, urban fantasy, muted colors with vibrant highlights, professional gacha splash art, detailed materials, gritty but polished", description: "Tactical techwear and urban fantasy aesthetic with professional gacha game splash art quality.", category: "Game Art" },
+  { id: "art_deco", name: "Art Deco / Dwarven", promptSnippet: ", art deco style, geometric shapes, gold and brass, symmetric, bold lines, metallic textures, dwarven architecture influence, luxury", description: "Geometric luxury with gold, brass, and symmetric bold lines.", category: "Abstract/UI" },
+  { id: "art_nouveau", name: "Art Nouveau", promptSnippet: ", art nouveau style, alphonse mucha inspired, decorative organic lines, floral borders, flat colors, elegant, stylized, golden age illustration", description: "Elegant, decorative organic lines and floral motifs inspired by Alphonse Mucha.", category: "Traditional" },
+  { id: "biomech", name: "Biomechanical", promptSnippet: ", biomechanical style, H.R. Giger inspired, organic machinery, dark, intricate details, metallic flesh, creepy, surreal", description: "Surreal blend of organic and mechanical elements, often dark and intricate.", category: "Digital Painting" },
+  { id: "blueprint", name: "Blueprint / Sketch", promptSnippet: ", blueprint style, technical drawing, white lines on blue background, schematic, rough sketch, construction lines", description: "Technical schematic look with white lines on a blue background.", category: "Abstract/UI" },
+  { id: "celestial", name: "Celestial / Cosmic", promptSnippet: ", celestial style, starry night, nebula clouds, constellations, gold and dark blue, divine beings, glowing eyes, magic", description: "Starry and divine with nebula clouds, constellations, and gold/blue tones.", category: "Digital Painting" },
+  { id: "charcoal", name: "Charcoal Sketch", promptSnippet: ", charcoal sketch style, rough texture, expressive strokes, black and white, dramatic lighting, messy, artistic", description: "Rough, expressive black and white strokes with dramatic lighting.", category: "Traditional" },
+  { id: "chibi", name: "Chibi Art Style", promptSnippet: ", chibi-inspired style, cute stylization, simplified shapes, rounded proportions, vibrant colors, soft shading, sticker-like illustration, playful and expressive design", description: "Cute stylized look with simplified shapes, vibrant colors, and soft shading. Works for characters, creatures, monsters, and items.", category: "Anime/Manga" },
+  { id: "classic_tcg", name: "Classic TCG", promptSnippet: ", traditional card game art style, digital painting, vibrant, clean composition, high fantasy, polished, reminiscent of MTG or Hearthstone", description: "The gold standard for digital card art\u2014clear, professional, and evocative.", category: "Game Art" },
+  { id: "clay", name: "Claymation", promptSnippet: ", claymation style, plasticine texture, stop motion look, soft lighting, depth of field, tactile, handmade feel, aardman style", description: "Tactile plasticine texture with a stop-motion animation look.", category: "Other" },
+  { id: "cozy_cottage", name: "Cozy Cottagecore", promptSnippet: ", cozy cottagecore style, warm lighting, soft textures, whimsical, inviting, pastel and earth tones, detailed background, ghibli background style", description: "Warm, whimsical, and inviting with pastel tones and soft textures.", category: "Digital Painting" },
+  { id: "cyberpunk", name: "Cyberpunk", promptSnippet: ", cyberpunk style, neon lights, futuristic, high tech, low life, detailed sci-fi", description: "High-contrast neon lights, futuristic tech, and gritty urban environments.", category: "Game Art" },
+  { id: "dark_souls", name: "Dark Fantasy", promptSnippet: ", dark fantasy style, grim, gritty, eldritch, detailed textures, dramatic lighting, souls-like", description: "Grim, gritty atmosphere with eldritch elements and heavy, dramatic shadows.", category: "Game Art" },
+  { id: "ethereal", name: "Ethereal / Dreamy", promptSnippet: ", ethereal style, dreamlike, soft focus, glowing light, bioluminescence, pastel gradients, floating particles, divine, celestial", description: "Dreamlike and soft with glowing lights, bioluminescence, and pastel gradients.", category: "Digital Painting" },
+  { id: "fate_anime", name: "Fate Series (Ufotable)", promptSnippet: ", fate series anime style, ufotable studio style, high-end digital animation, cinematic lighting, sharp shadows, high contrast, epic fantasy, masterpiece, vibrant magical effects", description: "Cinematic lighting, sharp outlines, and high-contrast shadows typical of Ufotable's Fate adaptations.", category: "Anime/Manga" },
+  { id: "noir", name: "Film Noir", promptSnippet: ", film noir style, black and white, high contrast, dramatic shadows, venetian blinds, detective, mystery, moody, cinematic", description: "Black and white cinematic style with high contrast and dramatic shadows.", category: "Retro" },
+  { id: "vector", name: "Flat Vector", promptSnippet: ", flat vector art, clean lines, minimalist, modern ui style, scalable graphics", description: "Clean, minimalist lines and flat colors, suitable for modern UI icons.", category: "Abstract/UI" },
+  { id: "gothic", name: "Gothic Horror", promptSnippet: ", gothic style, vampires, castles, red velvet, dark shadows, romantic horror, intricate lace, candlelight, classic dracula style", description: "Romantic horror with dark shadows, red velvet, intricate lace, and candlelight.", category: "Digital Painting" },
+  { id: "grimdark", name: "Grimdark", promptSnippet: ", grimdark style, gritty, dirty, war-torn, dark atmosphere, muted colors, high contrast, heavy shadows, warhammer style", description: "War-torn, dirty, and oppressive atmosphere with muted colors and high contrast.", category: "Game Art" },
+  { id: "high_fantasy", name: "High Fantasy (Classic)", promptSnippet: ", high fantasy style, detailed digital painting, magic the gathering art style, epic scale, realistic lighting, sharp details, dungeons and dragons style", description: "Epic scale and realistic lighting akin to Magic: The Gathering or D&D art.", category: "Digital Painting" },
+  { id: "impressionist", name: "Impressionist", promptSnippet: ", impressionist style, claude monet style, loose brushwork, vibrant light, capturing the moment, lack of fine detail, atmospheric", description: "Loose brushwork focusing on vibrant light and atmosphere over fine detail.", category: "Traditional" },
+  { id: "ink_wash", name: "Ink & Wash", promptSnippet: ", ink and wash style, sumi-e, watercolor wash, expressive brushstrokes, black and white with accent color, minimalist, traditional asian art", description: "Minimalist traditional Asian style with expressive black ink brushstrokes.", category: "Traditional" },
+  { id: "arknights", name: "Legion / Arknights (Classic)", promptSnippet: ", masterwork, sharp black outlines, clean cel-shaded, bold vibrant colors, metallic texture details, urban fantasy aesthetic", description: "High-polish modern anime style with heavy outlines and professional game asset rendering.", category: "Game Art" },
+  { id: "eldritch", name: "Lovecraftian Horror", promptSnippet: ", eldritch horror style, cosmic horror, tentacles, madness, dark fog, scary, creeping unease, detailed organic textures, bloodborne style", description: "Cosmic horror with creeping unease, organic textures, and dark fog.", category: "Digital Painting" },
+  { id: "apose_concept", name: "A-Pose Concept Art", promptSnippet: ", standing in a strict A-pose, arms outstretched at 45 degrees, character design sheet, concept art turnaround, blank neutral background, symmetrical stance, high-end 3D game studio concept art, full body visible", description: "Forces the character into a strict A-pose ideal for 3D modeling reference or 2D rigging. Blank background, highly symmetrical.", category: "Game Art" },
+  { id: "lost_ark_kr_arpg", name: "KR ARPG / Dark Gothic", promptSnippet: ", dark gothic-fantasy aesthetic, korean isometric arpg style, premium anime-influenced character design, high-contrast monochromatic scheme, obsidian black and pure white, painterly digital rendering, soft-brushed gradients, sharp technical borders, precise edge-highlights on metals, ethereal glassmorphism vfx", description: "High-fidelity dark gothic-fantasy typical of Korean ARPGs. Strong obsidian/white contrast, painterly rendering with precise metallic edges, and ethereal VFX.", category: "Game Art" },
+  { id: "low_poly", name: "Low Poly 3D", promptSnippet: ", low poly style, 3d render, flat shading, geometric shapes, retro game aesthetic, sharp edges, vibrant", description: "3D render style with flat shading and visible geometric shapes.", category: "Game Art" },
+  { id: "tapestry", name: "Medieval Tapestry", promptSnippet: ", medieval tapestry style, woven fabric texture, flat perspective, historical illustration, muted earth tones, embroidery details", description: "Woven fabric texture with flat perspective mimicking medieval embroidery.", category: "Traditional" },
+  { id: "mosaic", name: "Mosaic", promptSnippet: ", mosaic style, tile art, fragmented images, grout lines, texture, ancient roman aesthetic, decorative", description: "Fragmented tile art with visible grout lines and ancient aesthetic.", category: "Traditional" },
+  { id: "papercut", name: "Papercut / Diorama", promptSnippet: ", papercut art style, layered paper, shadow box effect, depth of field, craft aesthetic, simple shapes, textured paper", description: "Layered paper aesthetic with shadow box depth and simple, textured shapes.", category: "Abstract/UI" },
+  { id: "sketchbook", name: "Pencil Sketch", promptSnippet: ", hand-drawn pencil sketch, cross-hatching, graphite textures, rough expressive lines, sketchbook aesthetic, graphite on paper", description: "An informal, artistic look that looks like it came straight from a concept artist's notebook.", category: "Traditional" },
+  { id: "photorealistic", name: "Photorealistic / Lifelike", promptSnippet: ", photorealistic, 8k uhd, highly detailed lifelike texture, raw photo, f/1.8, cinematic lighting, sharp focus, highly detailed skin textures, realistic human eyes, professional studio photography, detailed hair strands, depth of field, [STRICT NEGATIVE]: no anime, no drawing, no illustration, no digital painting, no cartoon, no stylized features", description: "Hyper-realistic photographic style. Ideal for editing real human photos, portraits, or creating lifelike textures.", category: "Digital Painting" },
+  { id: "post_apoc", name: "Post-Apocalyptic", promptSnippet: ", post-apocalyptic style, wasteland, ruins, rust, scavenged gear, dust, orange and teal, survivalist, mad max style", description: "Wasteland aesthetic with ruins, rust, dust, and scavenged gear.", category: "Digital Painting" },
+  { id: "retro_8bit_micro", name: "Retro 8-bit Micro-Sprite", promptSnippet: ", 2d pixel art, 16x16 micro-sprite, retro 8-bit emulation, chibi proportions, exaggerated head-to-body ratio, abstracted facial features, single-pixel eyes, no mouth, limited color palette, flat fill, no shading, no gradients, no anti-aliasing, hard 1-pixel solid black border, top-down RPG style, sprite sheet layout, walk cycle frames", description: "Retro 2D pixel-art chibi sprite animation for top-down RPG games, using low resolution (16x16), limited colors, and frame-based sprite sheets.", category: "Retro" },
+  { id: "retro_comic", name: "Retro Comic", promptSnippet: ", retro comic book style, bold black outlines, halftone patterns, vibrant flat colors, graphic novel aesthetic, dynamic composition, ben-day dots", description: "Bold black outlines, halftone patterns, and vibrant flat colors like old comics.", category: "Retro" },
+  { id: "synthwave", name: "Retro Synthwave", promptSnippet: ", synthwave style, 80s retro, neon grid, magenta and cyan, sunset, futuristic, outrun aesthetic, digital glitch", description: "80s retro-futurism with neon grids, magenta/cyan palette, and sunsets.", category: "Retro" },
+  { id: "stained_glass", name: "Stained Glass", promptSnippet: ", stained glass style, vibrant translucent colors, black lead outlines, light passing through, geometric patterns, religious art style", description: "Vibrant translucent colors separated by bold black lead outlines.", category: "Traditional" },
+  { id: "steampunk", name: "Steampunk", promptSnippet: ", steampunk style, victorian era technology, brass and copper, gears, steam, intricate mechanical details, sepia tones", description: "Victorian technology with brass, copper, gears, and steam elements.", category: "Digital Painting" },
+  { id: "storybook", name: "Storybook", promptSnippet: ", storybook illustration, hand drawn, colored pencil, texture, whimsical, soft edges, children's book style, beatrix potter inspired", description: "Hand-drawn, colored pencil look with soft edges suitable for children's books.", category: "Traditional" },
+  { id: "tarot", name: "Tarot Card", promptSnippet: ", tarot card art style, symbolic, decorative, gold leaf details, heavy outlines, mystical, allegory, mucha inspired composition", description: "Symbolic and decorative with gold leaf details and heavy outlines.", category: "Traditional" },
+  { id: "ukiyo_e", name: "Ukiyo-e Woodblock", promptSnippet: ", ukiyo-e style, japanese woodblock print, flat perspective, bold outlines, textured paper, traditional pigment colors, hokusai inspired", description: "Japanese woodblock print style with flat perspective and bold outlines.", category: "Traditional" },
+  { id: "watercolor", name: "Watercolor", promptSnippet: ", watercolor style, soft edges, artistic, flowing colors, paper texture, dreamy", description: "Soft, flowing edges with paper texture and artistic, dreamy color blends.", category: "Traditional" }
+];
+
 // src/services/promptTemplates.ts
+var resolveArtStyleSnippet = (styleInput, activeArtStyle, projectName, customStyles) => {
+  if (!styleInput || !styleInput.trim()) {
+    return activeArtStyle?.promptSnippet || "";
+  }
+  const raw = styleInput.trim();
+  const lower = raw.toLowerCase();
+  if (["none", "no style", "no_style"].includes(lower)) {
+    return "";
+  }
+  if (["default", "project", "active", "current", "auto"].includes(lower)) {
+    return activeArtStyle?.promptSnippet || "";
+  }
+  if (projectName) {
+    const projLower = projectName.toLowerCase();
+    if (lower === projLower || lower.includes(projLower) || projLower.includes(lower)) {
+      if (activeArtStyle?.promptSnippet) {
+        return activeArtStyle.promptSnippet;
+      }
+    }
+  }
+  if (lower.includes("kingdoms divided") || lower.includes("kingdoms diveded")) {
+    const kdStyle = ART_STYLES.find((s) => s.id === "kingdoms_divided_char");
+    if (kdStyle?.promptSnippet) return kdStyle.promptSnippet;
+    if (activeArtStyle?.promptSnippet) return activeArtStyle.promptSnippet;
+  }
+  const allStyles = [...customStyles || [], ...ART_STYLES];
+  const byId = allStyles.find((s) => s.id.toLowerCase() === lower);
+  if (byId) return byId.promptSnippet;
+  const byName = allStyles.find((s) => s.name.toLowerCase() === lower);
+  if (byName) return byName.promptSnippet;
+  const normalizedSearch = lower.replace(/\s+(art\s+)?style$/, "").trim();
+  const bySub = allStyles.find(
+    (s) => s.id.toLowerCase() === normalizedSearch || s.name.toLowerCase() === normalizedSearch || s.id.toLowerCase().includes(normalizedSearch) || s.name.toLowerCase().includes(normalizedSearch) || normalizedSearch.includes(s.id.toLowerCase()) || normalizedSearch.includes(s.name.toLowerCase())
+  );
+  if (bySub) return bySub.promptSnippet;
+  if (raw.includes(",") || raw.split(/\s+/).length > 3) {
+    return raw.startsWith(",") ? raw : `, ${raw}`;
+  }
+  if (activeArtStyle?.promptSnippet && !activeArtStyle.promptSnippet.toLowerCase().includes(lower)) {
+    return `${activeArtStyle.promptSnippet}, ${raw}`;
+  }
+  return raw.startsWith(",") ? raw : `, ${raw}`;
+};
 var getShotDistanceFramingDirective = (framing) => {
   const norm = normalizeFramingId(framing);
   switch (norm) {
@@ -774,8 +869,9 @@ var buildIllustrationPrompt = (basePrompt, gameContext, styleSnippet, bgConfig, 
 `;
     }
   }
-  if (styleSnippet) {
-    fullPrompt += `STYLE: ${styleSnippet}
+  const effectiveStyle = resolveArtStyleSnippet(styleSnippet);
+  if (effectiveStyle) {
+    fullPrompt += `STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
 `;
     fullPrompt += `(Ensure the style strictly matches the above snippet, do not revert to realism or generic defaults.)
 `;
@@ -1071,58 +1167,6 @@ CORE DESCRIPTION: ${userPrompt || "A detailed game map"}
   return fullPrompt;
 };
 
-// src/constants/artStyles.ts
-var ART_STYLES = [
-  { id: "none", name: "No Style", promptSnippet: "", description: "Uses only your prompt without any additional stylistic bias.", category: "Other" },
-  { id: "kingdoms_divided_char", name: "Kingdoms Divided (Feudal Fantasy)", promptSnippet: ", kingdoms divided character art style, visual novel character dialogue sprite, detailed anime-influenced medieval fantasy illustration, painterly digital art, soft clean linework, tactile cloth and leather textures, mature refined character design, natural diffused ambient daylight, soft realistic shadows, no harsh rim light, isolated on solid white background", description: "Tactile medieval feudal fantasy character art with stylized anime facial aesthetics, rich painterly fabric textures, and soft natural daylight.", category: "Game Art", exampleUrl: "/styles/kingdoms_divided_character.png" },
-  { id: "pixel_art", name: "2D Pixel Art (16-bit)", promptSnippet: ", pixel art style, 16-bit, retro game asset, dithering, vibrant", description: "Retro 16-bit game aesthetic with visible pixels and dithering.", category: "Retro" },
-  { id: "80s_fantasy", name: "80s Dark Fantasy", promptSnippet: ", 80s dark fantasy style, frank frazetta style, boris vallejo style, oil painting, dramatic muscles, epic poses, misty background, retro fantasy cover art", description: "Retro fantasy cover art with dramatic muscles, epic poses, and mist.", category: "Retro" },
-  { id: "anime", name: "Anime / Manga", promptSnippet: ", anime style, cel shaded, vibrant colors, studio ghibli inspired, high quality", description: "Clean lines, cel-shading, and vibrant colors inspired by high-quality Japanese animation.", category: "Anime/Manga" },
-  { id: "anime_game", name: "Anime Game Style", promptSnippet: ", anime game style, genshin impact aesthetic, honkai star rail style, vibrant cel-shaded, clean gradients, soft shadows, high-quality 3d anime render look, polished surfaces", description: "Vibrant and clean cel-shaded look matching high-budget modern anime games like Genshin Impact.", category: "Game Art" },
-  { id: "arknights_tactical", name: "Arknights Style", promptSnippet: ", arknights style, tactical anime aesthetic, techwear, urban fantasy, muted colors with vibrant highlights, professional gacha splash art, detailed materials, gritty but polished", description: "Tactical techwear and urban fantasy aesthetic with professional gacha game splash art quality.", category: "Game Art" },
-  { id: "art_deco", name: "Art Deco / Dwarven", promptSnippet: ", art deco style, geometric shapes, gold and brass, symmetric, bold lines, metallic textures, dwarven architecture influence, luxury", description: "Geometric luxury with gold, brass, and symmetric bold lines.", category: "Abstract/UI" },
-  { id: "art_nouveau", name: "Art Nouveau", promptSnippet: ", art nouveau style, alphonse mucha inspired, decorative organic lines, floral borders, flat colors, elegant, stylized, golden age illustration", description: "Elegant, decorative organic lines and floral motifs inspired by Alphonse Mucha.", category: "Traditional" },
-  { id: "biomech", name: "Biomechanical", promptSnippet: ", biomechanical style, H.R. Giger inspired, organic machinery, dark, intricate details, metallic flesh, creepy, surreal", description: "Surreal blend of organic and mechanical elements, often dark and intricate.", category: "Digital Painting" },
-  { id: "blueprint", name: "Blueprint / Sketch", promptSnippet: ", blueprint style, technical drawing, white lines on blue background, schematic, rough sketch, construction lines", description: "Technical schematic look with white lines on a blue background.", category: "Abstract/UI" },
-  { id: "celestial", name: "Celestial / Cosmic", promptSnippet: ", celestial style, starry night, nebula clouds, constellations, gold and dark blue, divine beings, glowing eyes, magic", description: "Starry and divine with nebula clouds, constellations, and gold/blue tones.", category: "Digital Painting" },
-  { id: "charcoal", name: "Charcoal Sketch", promptSnippet: ", charcoal sketch style, rough texture, expressive strokes, black and white, dramatic lighting, messy, artistic", description: "Rough, expressive black and white strokes with dramatic lighting.", category: "Traditional" },
-  { id: "chibi", name: "Chibi Art Style", promptSnippet: ", chibi-inspired style, cute stylization, simplified shapes, rounded proportions, vibrant colors, soft shading, sticker-like illustration, playful and expressive design", description: "Cute stylized look with simplified shapes, vibrant colors, and soft shading. Works for characters, creatures, monsters, and items.", category: "Anime/Manga" },
-  { id: "classic_tcg", name: "Classic TCG", promptSnippet: ", traditional card game art style, digital painting, vibrant, clean composition, high fantasy, polished, reminiscent of MTG or Hearthstone", description: "The gold standard for digital card art\u2014clear, professional, and evocative.", category: "Game Art" },
-  { id: "clay", name: "Claymation", promptSnippet: ", claymation style, plasticine texture, stop motion look, soft lighting, depth of field, tactile, handmade feel, aardman style", description: "Tactile plasticine texture with a stop-motion animation look.", category: "Other" },
-  { id: "cozy_cottage", name: "Cozy Cottagecore", promptSnippet: ", cozy cottagecore style, warm lighting, soft textures, whimsical, inviting, pastel and earth tones, detailed background, ghibli background style", description: "Warm, whimsical, and inviting with pastel tones and soft textures.", category: "Digital Painting" },
-  { id: "cyberpunk", name: "Cyberpunk", promptSnippet: ", cyberpunk style, neon lights, futuristic, high tech, low life, detailed sci-fi", description: "High-contrast neon lights, futuristic tech, and gritty urban environments.", category: "Game Art" },
-  { id: "dark_souls", name: "Dark Fantasy", promptSnippet: ", dark fantasy style, grim, gritty, eldritch, detailed textures, dramatic lighting, souls-like", description: "Grim, gritty atmosphere with eldritch elements and heavy, dramatic shadows.", category: "Game Art" },
-  { id: "ethereal", name: "Ethereal / Dreamy", promptSnippet: ", ethereal style, dreamlike, soft focus, glowing light, bioluminescence, pastel gradients, floating particles, divine, celestial", description: "Dreamlike and soft with glowing lights, bioluminescence, and pastel gradients.", category: "Digital Painting" },
-  { id: "fate_anime", name: "Fate Series (Ufotable)", promptSnippet: ", fate series anime style, ufotable studio style, high-end digital animation, cinematic lighting, sharp shadows, high contrast, epic fantasy, masterpiece, vibrant magical effects", description: "Cinematic lighting, sharp outlines, and high-contrast shadows typical of Ufotable's Fate adaptations.", category: "Anime/Manga" },
-  { id: "noir", name: "Film Noir", promptSnippet: ", film noir style, black and white, high contrast, dramatic shadows, venetian blinds, detective, mystery, moody, cinematic", description: "Black and white cinematic style with high contrast and dramatic shadows.", category: "Retro" },
-  { id: "vector", name: "Flat Vector", promptSnippet: ", flat vector art, clean lines, minimalist, modern ui style, scalable graphics", description: "Clean, minimalist lines and flat colors, suitable for modern UI icons.", category: "Abstract/UI" },
-  { id: "gothic", name: "Gothic Horror", promptSnippet: ", gothic style, vampires, castles, red velvet, dark shadows, romantic horror, intricate lace, candlelight, classic dracula style", description: "Romantic horror with dark shadows, red velvet, intricate lace, and candlelight.", category: "Digital Painting" },
-  { id: "grimdark", name: "Grimdark", promptSnippet: ", grimdark style, gritty, dirty, war-torn, dark atmosphere, muted colors, high contrast, heavy shadows, warhammer style", description: "War-torn, dirty, and oppressive atmosphere with muted colors and high contrast.", category: "Game Art" },
-  { id: "high_fantasy", name: "High Fantasy (Classic)", promptSnippet: ", high fantasy style, detailed digital painting, magic the gathering art style, epic scale, realistic lighting, sharp details, dungeons and dragons style", description: "Epic scale and realistic lighting akin to Magic: The Gathering or D&D art.", category: "Digital Painting" },
-  { id: "impressionist", name: "Impressionist", promptSnippet: ", impressionist style, claude monet style, loose brushwork, vibrant light, capturing the moment, lack of fine detail, atmospheric", description: "Loose brushwork focusing on vibrant light and atmosphere over fine detail.", category: "Traditional" },
-  { id: "ink_wash", name: "Ink & Wash", promptSnippet: ", ink and wash style, sumi-e, watercolor wash, expressive brushstrokes, black and white with accent color, minimalist, traditional asian art", description: "Minimalist traditional Asian style with expressive black ink brushstrokes.", category: "Traditional" },
-  { id: "arknights", name: "Legion / Arknights (Classic)", promptSnippet: ", masterwork, sharp black outlines, clean cel-shaded, bold vibrant colors, metallic texture details, urban fantasy aesthetic", description: "High-polish modern anime style with heavy outlines and professional game asset rendering.", category: "Game Art" },
-  { id: "eldritch", name: "Lovecraftian Horror", promptSnippet: ", eldritch horror style, cosmic horror, tentacles, madness, dark fog, scary, creeping unease, detailed organic textures, bloodborne style", description: "Cosmic horror with creeping unease, organic textures, and dark fog.", category: "Digital Painting" },
-  { id: "apose_concept", name: "A-Pose Concept Art", promptSnippet: ", standing in a strict A-pose, arms outstretched at 45 degrees, character design sheet, concept art turnaround, blank neutral background, symmetrical stance, high-end 3D game studio concept art, full body visible", description: "Forces the character into a strict A-pose ideal for 3D modeling reference or 2D rigging. Blank background, highly symmetrical.", category: "Game Art" },
-  { id: "lost_ark_kr_arpg", name: "KR ARPG / Dark Gothic", promptSnippet: ", dark gothic-fantasy aesthetic, korean isometric arpg style, premium anime-influenced character design, high-contrast monochromatic scheme, obsidian black and pure white, painterly digital rendering, soft-brushed gradients, sharp technical borders, precise edge-highlights on metals, ethereal glassmorphism vfx", description: "High-fidelity dark gothic-fantasy typical of Korean ARPGs. Strong obsidian/white contrast, painterly rendering with precise metallic edges, and ethereal VFX.", category: "Game Art" },
-  { id: "low_poly", name: "Low Poly 3D", promptSnippet: ", low poly style, 3d render, flat shading, geometric shapes, retro game aesthetic, sharp edges, vibrant", description: "3D render style with flat shading and visible geometric shapes.", category: "Game Art" },
-  { id: "tapestry", name: "Medieval Tapestry", promptSnippet: ", medieval tapestry style, woven fabric texture, flat perspective, historical illustration, muted earth tones, embroidery details", description: "Woven fabric texture with flat perspective mimicking medieval embroidery.", category: "Traditional" },
-  { id: "mosaic", name: "Mosaic", promptSnippet: ", mosaic style, tile art, fragmented images, grout lines, texture, ancient roman aesthetic, decorative", description: "Fragmented tile art with visible grout lines and ancient aesthetic.", category: "Traditional" },
-  { id: "papercut", name: "Papercut / Diorama", promptSnippet: ", papercut art style, layered paper, shadow box effect, depth of field, craft aesthetic, simple shapes, textured paper", description: "Layered paper aesthetic with shadow box depth and simple, textured shapes.", category: "Abstract/UI" },
-  { id: "sketchbook", name: "Pencil Sketch", promptSnippet: ", hand-drawn pencil sketch, cross-hatching, graphite textures, rough expressive lines, sketchbook aesthetic, graphite on paper", description: "An informal, artistic look that looks like it came straight from a concept artist's notebook.", category: "Traditional" },
-  { id: "photorealistic", name: "Photorealistic / Lifelike", promptSnippet: ", photorealistic, 8k uhd, highly detailed lifelike texture, raw photo, f/1.8, cinematic lighting, sharp focus, highly detailed skin textures, realistic human eyes, professional studio photography, detailed hair strands, depth of field, [STRICT NEGATIVE]: no anime, no drawing, no illustration, no digital painting, no cartoon, no stylized features", description: "Hyper-realistic photographic style. Ideal for editing real human photos, portraits, or creating lifelike textures.", category: "Digital Painting" },
-  { id: "post_apoc", name: "Post-Apocalyptic", promptSnippet: ", post-apocalyptic style, wasteland, ruins, rust, scavenged gear, dust, orange and teal, survivalist, mad max style", description: "Wasteland aesthetic with ruins, rust, dust, and scavenged gear.", category: "Digital Painting" },
-  { id: "retro_8bit_micro", name: "Retro 8-bit Micro-Sprite", promptSnippet: ", 2d pixel art, 16x16 micro-sprite, retro 8-bit emulation, chibi proportions, exaggerated head-to-body ratio, abstracted facial features, single-pixel eyes, no mouth, limited color palette, flat fill, no shading, no gradients, no anti-aliasing, hard 1-pixel solid black border, top-down RPG style, sprite sheet layout, walk cycle frames", description: "Retro 2D pixel-art chibi sprite animation for top-down RPG games, using low resolution (16x16), limited colors, and frame-based sprite sheets.", category: "Retro" },
-  { id: "retro_comic", name: "Retro Comic", promptSnippet: ", retro comic book style, bold black outlines, halftone patterns, vibrant flat colors, graphic novel aesthetic, dynamic composition, ben-day dots", description: "Bold black outlines, halftone patterns, and vibrant flat colors like old comics.", category: "Retro" },
-  { id: "synthwave", name: "Retro Synthwave", promptSnippet: ", synthwave style, 80s retro, neon grid, magenta and cyan, sunset, futuristic, outrun aesthetic, digital glitch", description: "80s retro-futurism with neon grids, magenta/cyan palette, and sunsets.", category: "Retro" },
-  { id: "stained_glass", name: "Stained Glass", promptSnippet: ", stained glass style, vibrant translucent colors, black lead outlines, light passing through, geometric patterns, religious art style", description: "Vibrant translucent colors separated by bold black lead outlines.", category: "Traditional" },
-  { id: "steampunk", name: "Steampunk", promptSnippet: ", steampunk style, victorian era technology, brass and copper, gears, steam, intricate mechanical details, sepia tones", description: "Victorian technology with brass, copper, gears, and steam elements.", category: "Digital Painting" },
-  { id: "storybook", name: "Storybook", promptSnippet: ", storybook illustration, hand drawn, colored pencil, texture, whimsical, soft edges, children's book style, beatrix potter inspired", description: "Hand-drawn, colored pencil look with soft edges suitable for children's books.", category: "Traditional" },
-  { id: "tarot", name: "Tarot Card", promptSnippet: ", tarot card art style, symbolic, decorative, gold leaf details, heavy outlines, mystical, allegory, mucha inspired composition", description: "Symbolic and decorative with gold leaf details and heavy outlines.", category: "Traditional" },
-  { id: "ukiyo_e", name: "Ukiyo-e Woodblock", promptSnippet: ", ukiyo-e style, japanese woodblock print, flat perspective, bold outlines, textured paper, traditional pigment colors, hokusai inspired", description: "Japanese woodblock print style with flat perspective and bold outlines.", category: "Traditional" },
-  { id: "watercolor", name: "Watercolor", promptSnippet: ", watercolor style, soft edges, artistic, flowing colors, paper texture, dreamy", description: "Soft, flowing edges with paper texture and artistic, dreamy color blends.", category: "Traditional" }
-];
-
 // src/mcp/index.ts
 import fs2 from "fs";
 import path2 from "path";
@@ -1401,7 +1445,7 @@ async function getMythicSettings() {
       bridgeRunning: Boolean(statusData),
       bridgePort: BRIDGE_PORT,
       webPort: WEB_PORT,
-      extensionVersion: statusData?.extensionVersion || "1.5.2",
+      extensionVersion: statusData?.extensionVersion || "1.5.3",
       connected: Boolean(statusData?.connected),
       accounts: statusData?.accounts || [],
       tabs: statusData?.tabs || [],
@@ -1641,16 +1685,24 @@ ${promptStr}
 };
 var defaultGameContext = { setting: "High Fantasy", tone: "Epic" };
 var defaultBgConfig = { mode: "transparent" };
-function getActiveGameContext() {
-  const projectFile = path2.join(process.cwd(), "mythic_project.json");
+function getProjectConfig() {
+  const projectRoot = process.env.MYTHICFRAME_ROOT || (fs2.existsSync(path2.join(process.cwd(), "package.json")) ? process.cwd() : path2.resolve(path2.dirname(process.argv[1] || process.cwd()), ".."));
+  const projectFile = path2.join(projectRoot, "mythic_project.json");
   if (fs2.existsSync(projectFile)) {
     try {
-      const data = JSON.parse(fs2.readFileSync(projectFile, "utf8"));
-      if (data.gameContext) return data.gameContext;
+      return JSON.parse(fs2.readFileSync(projectFile, "utf8"));
     } catch (e) {
     }
   }
-  return defaultGameContext;
+  return { projectName: "Kingdoms Divided", gameContext: defaultGameContext };
+}
+function getActiveGameContext() {
+  const cfg = getProjectConfig();
+  return cfg.gameContext || defaultGameContext;
+}
+function resolveProjectArtStyle(styleInput) {
+  const cfg = getProjectConfig();
+  return resolveArtStyleSnippet(styleInput, cfg.activeArtStyle, cfg.projectName, cfg.customStyles);
 }
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
@@ -1907,6 +1959,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             images: { type: "array", items: { type: "string" }, description: "Array of reference image paths or base64 data URIs" },
             style: { type: "string", description: "Optional art style snippet" },
             quality: { type: "string", enum: ["standard", "high", "ultra_original"], description: "Image resolution & quality mode: 'ultra_original' (master full-res), 'high' (2K), or 'standard' (preview)" },
+            transparentBackground: { type: "boolean", description: "If true, isolates subject on a clean flat white background ready for transparent cutout." },
+            cleanBackground: { type: "boolean", description: "Alias for transparentBackground." },
             chatSessionMode: { type: "string", enum: ["same_chat", "temporary_chat", "new_chat"], description: "Conversation session mode: 'same_chat' (reuses current conversation thread), 'new_chat' (forces fresh conversation), or 'temporary_chat'. Default: 'same_chat'" },
             timeoutSeconds: { type: "number", description: "Timeout in seconds (default 120)" }
           },
@@ -1923,7 +1977,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             engine: { type: "string", enum: ["auto", "bei", "gemini-api", "prompt-only"], description: "Engine route (default 'auto')" },
             geminiApiKey: { type: "string", description: "Optional Gemini API key if using gemini-api route" },
             aspectRatio: { type: "string", description: "'1:1', '16:9', '9:16', '3:4', '4:3'" },
-            style: { type: "string", description: "Art style snippet" },
+            style: { type: "string", description: "Art style snippet or style ID" },
+            transparentBackground: { type: "boolean", description: "If true, isolates subject on a clean flat white background ready for transparent cutout." },
+            cleanBackground: { type: "boolean", description: "Alias for transparentBackground." },
             quality: { type: "string", enum: ["standard", "high", "ultra_original"], description: "Image resolution & quality mode for BEI: 'ultra_original', 'high', or 'standard'" },
             images: { type: "array", items: { type: "string" }, description: "Optional reference images" },
             target: { type: "string", enum: ["gemini", "chatgpt"] },
@@ -1952,11 +2008,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "mythic_list_art_styles",
-        description: "Lists all available art styles (45+ built-in styles + custom project styles) with style IDs, descriptions, and prompt snippets.",
+        description: "Lists all available art styles (45+ built-in styles + custom project styles) with style IDs, descriptions, and prompt snippets. Supports keyword filtering by theme or aesthetic.",
         inputSchema: {
           type: "object",
           properties: {
-            category: { type: "string", description: "Optional filter: 'Game Art', 'Anime/Manga', 'Digital Painting', 'Traditional', 'Abstract/UI', 'Retro', 'Other'" }
+            category: { type: "string", description: "Optional filter: 'Game Art', 'Anime/Manga', 'Digital Painting', 'Traditional', 'Abstract/UI', 'Retro', 'Other'" },
+            query: { type: "string", description: "Optional search query or keywords to filter styles by theme, mood, or aesthetic (e.g. 'feudal', 'fantasy', 'anime', 'pixel', 'dark')" }
           },
           required: []
         }
@@ -2030,10 +2087,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         promptToBuild += `, looking ${args.lookTarget}`;
       }
       const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.style);
       const built = buildIllustrationPrompt(
         promptToBuild,
         activeContext,
-        args.style || "",
+        effectiveStyle,
         bgConfig,
         [],
         void 0,
@@ -2085,10 +2143,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           let framing = void 0;
           if (variation.toLowerCase() === "full-body" || variation.toLowerCase() === "full body") framing = "full-body";
           if (variation.toLowerCase() === "waist-up" || variation.toLowerCase() === "waist up") framing = "waist-up";
+          const activeContext = getActiveGameContext();
+          const effectiveStyle = resolveProjectArtStyle(args.style);
           const built = buildIllustrationPrompt(
             subject,
-            defaultGameContext,
-            args.style || "",
+            activeContext,
+            effectiveStyle,
             bgConfig,
             [],
             void 0,
@@ -2215,9 +2275,22 @@ ${downloadSection}`;
       return { content: [{ type: "text", text }] };
     } else if (name === "mythic_bei_generate") {
       let promptToSend = args.prompt;
-      if (args.style) {
-        const built = buildIllustrationPrompt(args.prompt, defaultGameContext, args.style, defaultBgConfig, []);
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.style);
+      const wantTransparent = Boolean(args.transparentBackground || args.cleanBackground);
+      const effectiveBgConfig = wantTransparent ? { mode: "transparent", color: "#FFFFFF", allowTransparency: true } : defaultBgConfig;
+      if (!args.prompt.includes("SUBJECT:")) {
+        const built = buildIllustrationPrompt(args.prompt, activeContext, effectiveStyle, effectiveBgConfig, []);
         promptToSend = built.textPrompt;
+      } else if (effectiveStyle && !args.prompt.includes("STYLE:")) {
+        promptToSend += `
+STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
+`;
+      }
+      if (wantTransparent && !promptToSend.includes("[MANDATORY ISOLATION]")) {
+        promptToSend += `
+[MANDATORY ISOLATION]: Render standalone character cleanly centered on an absolute flat white background (#FFFFFF) with high contrast for alpha cutout. No shadows, no gradients, no scenery.
+`;
       }
       const beiRes = await generateWithBEI({
         prompt: promptToSend,
@@ -2250,16 +2323,29 @@ Image saved to: ${beiRes.filePath}${sizeMB}
 Job ID: ${beiRes.jobId}
 Quality: ${args.quality || "ultra_original"}
 File Size: ${sizeMB.trim() || "Unknown"}
-
+${wantTransparent ? "Background: Isolated on flat key for transparent cutout\n" : ""}
 Please embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
         }]
       };
     } else if (name === "mythic_smart_generate") {
       const engineChoice = args.engine || "auto";
       let promptToSend = args.prompt;
-      if (args.style) {
-        const built = buildIllustrationPrompt(args.prompt, defaultGameContext, args.style, defaultBgConfig, []);
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.style);
+      const wantTransparent = Boolean(args.transparentBackground || args.cleanBackground);
+      const effectiveBgConfig = wantTransparent ? { mode: "transparent", color: "#FFFFFF", allowTransparency: true } : defaultBgConfig;
+      if (!args.prompt.includes("SUBJECT:")) {
+        const built = buildIllustrationPrompt(args.prompt, activeContext, effectiveStyle, effectiveBgConfig, []);
         promptToSend = built.textPrompt;
+      } else if (effectiveStyle && !args.prompt.includes("STYLE:")) {
+        promptToSend += `
+STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
+`;
+      }
+      if (wantTransparent && !promptToSend.includes("[MANDATORY ISOLATION]")) {
+        promptToSend += `
+[MANDATORY ISOLATION]: Render standalone character cleanly centered on an absolute flat white background (#FFFFFF) with high contrast for alpha cutout. No shadows, no gradients, no scenery.
+`;
       }
       if (engineChoice === "prompt-only") {
         return { content: [{ type: "text", text: formatTextInstruction(promptToSend) }] };
@@ -2411,7 +2497,13 @@ Connected Browser Tabs (${settings.tabs?.length || 0}):
       if (args.category) {
         styles = styles.filter((s) => s.category?.toLowerCase() === args.category.toLowerCase());
       }
-      let output = `MYTHICFRAME ART STYLE LIBRARY (${styles.length} styles available):
+      if (args.query) {
+        const q = String(args.query).toLowerCase().trim();
+        styles = styles.filter(
+          (s) => s.id.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || (s.description || "").toLowerCase().includes(q) || (s.promptSnippet || "").toLowerCase().includes(q) || (s.category || "").toLowerCase().includes(q)
+        );
+      }
+      let output = `MYTHICFRAME ART STYLE LIBRARY (${styles.length} styles available${args.query ? `, matching "${args.query}"` : ""}):
 
 `;
       styles.forEach((s) => {
@@ -2432,12 +2524,21 @@ Connected Browser Tabs (${settings.tabs?.length || 0}):
         }
       }
       let targetStyle = ART_STYLES.find((s) => s.id === args.styleId);
+      if (!targetStyle && args.styleId) {
+        const needle = args.styleId.toLowerCase().replace(/\s+(art\s+)?style$/, "").trim();
+        targetStyle = ART_STYLES.find(
+          (s) => s.id.toLowerCase() === needle || s.name.toLowerCase() === needle || s.id.toLowerCase().includes(needle) || s.name.toLowerCase().includes(needle)
+        );
+      }
       if (!targetStyle && Array.isArray(projectData.customStyles)) {
-        targetStyle = projectData.customStyles.find((s) => s.id === args.styleId);
+        const needle = (args.styleId || "").toLowerCase().replace(/\s+(art\s+)?style$/, "").trim();
+        targetStyle = projectData.customStyles.find(
+          (s) => s.id === args.styleId || s.id.toLowerCase() === needle || s.name.toLowerCase() === needle || s.name.toLowerCase().includes(needle)
+        );
       }
       if (!targetStyle && !args.customPromptSnippet) {
         return {
-          content: [{ type: "text", text: `Style with ID '${args.styleId}' not found in library. Use 'mythic_list_art_styles' to see valid style IDs.` }],
+          content: [{ type: "text", text: `Style '${args.styleId}' not found in library. Use 'mythic_list_art_styles' to see valid styles.` }],
           isError: true
         };
       }
@@ -2478,6 +2579,8 @@ Connected Browser Tabs (${settings.tabs?.length || 0}):
         content: [{ type: "text", text: `Custom art style '${args.name}' (ID: ${args.id}) created and saved to project! You can now activate it using 'mythic_apply_art_style'.` }]
       };
     } else if (name === "prepare_map_grid_prompt") {
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.styleSnippet || args.style);
       const mapConfig = {
         enabled: true,
         viewMode: args.viewMode || "isometric",
@@ -2493,23 +2596,31 @@ Connected Browser Tabs (${settings.tabs?.length || 0}):
         decorationLevel: "medium",
         transparentBackground: true
       };
-      result = buildMapGridPrompt(args.prompt, defaultGameContext, args.styleSnippet || "", mapConfig);
+      result = buildMapGridPrompt(args.prompt, activeContext, effectiveStyle, mapConfig);
       aspectRatio = "16:9";
     } else if (name === "prepare_pose_studio_prompt") {
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.styleSnippet || args.style);
       const mockPose = { joints: [{ name: "head", x: 50, y: 20 }, { name: "chest", x: 50, y: 40 }] };
-      const built = buildPoseStudioPrompt(args.prompt, defaultGameContext, args.styleSnippet || "", defaultBgConfig, [], mockPose);
+      const built = buildPoseStudioPrompt(args.prompt, activeContext, effectiveStyle, defaultBgConfig, [], mockPose);
       result = built.textPrompt;
     } else if (name === "prepare_sprite_sheet_prompts") {
-      result = buildSpriteSheetPromptsPrompt(args.prompt, args.frameCount, defaultGameContext);
+      const activeContext = getActiveGameContext();
+      result = buildSpriteSheetPromptsPrompt(args.prompt, args.frameCount, activeContext);
       isImageGen = false;
     } else if (name === "prepare_frame_prompt") {
-      result = buildFramePrompt(args.prompt, defaultGameContext, args.styleSnippet || "", args.elements);
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.styleSnippet || args.style);
+      result = buildFramePrompt(args.prompt, activeContext, effectiveStyle, args.elements);
     } else if (name === "prepare_background_asset_prompt") {
-      result = buildBackgroundAssetPrompt(args.prompt, defaultGameContext, args.styleSnippet || "", args.patternType);
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.styleSnippet || args.style);
+      result = buildBackgroundAssetPrompt(args.prompt, activeContext, effectiveStyle, args.patternType);
       aspectRatio = "16:9";
     } else if (name === "prepare_extract_clothes_prompt") {
+      const activeContext = getActiveGameContext();
       const bg = { mode: args.backgroundMode || "transparent" };
-      result = buildExtractClothesPrompt(defaultGameContext, bg);
+      result = buildExtractClothesPrompt(activeContext, bg);
     } else if (name === "prepare_card_suggestions_prompt") {
       result = buildCardSuggestionsPrompt(args.artPrompt, args.currentName || "New Card");
       isImageGen = false;

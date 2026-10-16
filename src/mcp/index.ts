@@ -14,7 +14,8 @@ import {
   buildFramePrompt,
   buildBackgroundAssetPrompt,
   buildExtractClothesPrompt,
-  buildCardSuggestionsPrompt
+  buildCardSuggestionsPrompt,
+  resolveArtStyleSnippet
 } from "../services/promptTemplates.js";
 import { GameContext, BackgroundConfig, MapGridConfig, PoseData } from "../types.js";
 import { ART_STYLES } from "../constants/artStyles.js";
@@ -120,15 +121,31 @@ const formatTextInstruction = (promptStr: string) => {
 const defaultGameContext: GameContext = { setting: "High Fantasy", tone: "Epic" } as any;
 const defaultBgConfig: BackgroundConfig = { mode: "transparent" } as any;
 
-function getActiveGameContext(): GameContext {
-  const projectFile = path.join(process.cwd(), "mythic_project.json");
+function getProjectConfig(): {
+  projectName?: string;
+  gameContext?: GameContext;
+  activeArtStyle?: { id?: string; name?: string; promptSnippet?: string };
+  customStyles?: any[];
+} {
+  const projectRoot = process.env.MYTHICFRAME_ROOT || 
+    (fs.existsSync(path.join(process.cwd(), 'package.json')) ? process.cwd() : path.resolve(path.dirname(process.argv[1] || process.cwd()), '..'));
+  const projectFile = path.join(projectRoot, "mythic_project.json");
   if (fs.existsSync(projectFile)) {
     try {
-      const data = JSON.parse(fs.readFileSync(projectFile, "utf8"));
-      if (data.gameContext) return data.gameContext;
+      return JSON.parse(fs.readFileSync(projectFile, "utf8"));
     } catch (e) {}
   }
-  return defaultGameContext;
+  return { projectName: "Kingdoms Divided", gameContext: defaultGameContext };
+}
+
+function getActiveGameContext(): GameContext {
+  const cfg = getProjectConfig();
+  return cfg.gameContext || defaultGameContext;
+}
+
+function resolveProjectArtStyle(styleInput?: string): string {
+  const cfg = getProjectConfig();
+  return resolveArtStyleSnippet(styleInput, cfg.activeArtStyle, cfg.projectName, cfg.customStyles);
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -386,6 +403,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             images: { type: "array", items: { type: "string" }, description: "Array of reference image paths or base64 data URIs" },
             style: { type: "string", description: "Optional art style snippet" },
             quality: { type: "string", enum: ["standard", "high", "ultra_original"], description: "Image resolution & quality mode: 'ultra_original' (master full-res), 'high' (2K), or 'standard' (preview)" },
+            transparentBackground: { type: "boolean", description: "If true, isolates subject on a clean flat white background ready for transparent cutout." },
+            cleanBackground: { type: "boolean", description: "Alias for transparentBackground." },
             chatSessionMode: { type: "string", enum: ["same_chat", "temporary_chat", "new_chat"], description: "Conversation session mode: 'same_chat' (reuses current conversation thread), 'new_chat' (forces fresh conversation), or 'temporary_chat'. Default: 'same_chat'" },
             timeoutSeconds: { type: "number", description: "Timeout in seconds (default 120)" }
           },
@@ -402,7 +421,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             engine: { type: "string", enum: ["auto", "bei", "gemini-api", "prompt-only"], description: "Engine route (default 'auto')" },
             geminiApiKey: { type: "string", description: "Optional Gemini API key if using gemini-api route" },
             aspectRatio: { type: "string", description: "'1:1', '16:9', '9:16', '3:4', '4:3'" },
-            style: { type: "string", description: "Art style snippet" },
+            style: { type: "string", description: "Art style snippet or style ID" },
+            transparentBackground: { type: "boolean", description: "If true, isolates subject on a clean flat white background ready for transparent cutout." },
+            cleanBackground: { type: "boolean", description: "Alias for transparentBackground." },
             quality: { type: "string", enum: ["standard", "high", "ultra_original"], description: "Image resolution & quality mode for BEI: 'ultra_original', 'high', or 'standard'" },
             images: { type: "array", items: { type: "string" }, description: "Optional reference images" },
             target: { type: "string", enum: ["gemini", "chatgpt"] },
@@ -431,11 +452,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "mythic_list_art_styles",
-        description: "Lists all available art styles (45+ built-in styles + custom project styles) with style IDs, descriptions, and prompt snippets.",
+        description: "Lists all available art styles (45+ built-in styles + custom project styles) with style IDs, descriptions, and prompt snippets. Supports keyword filtering by theme or aesthetic.",
         inputSchema: {
           type: "object",
           properties: {
-            category: { type: "string", description: "Optional filter: 'Game Art', 'Anime/Manga', 'Digital Painting', 'Traditional', 'Abstract/UI', 'Retro', 'Other'" }
+            category: { type: "string", description: "Optional filter: 'Game Art', 'Anime/Manga', 'Digital Painting', 'Traditional', 'Abstract/UI', 'Retro', 'Other'" },
+            query: { type: "string", description: "Optional search query or keywords to filter styles by theme, mood, or aesthetic (e.g. 'feudal', 'fantasy', 'anime', 'pixel', 'dark')" }
           },
           required: []
         }
@@ -517,8 +539,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.style);
       const built = buildIllustrationPrompt(
-          promptToBuild, activeContext, args.style || "", bgConfig, [], undefined, undefined, mappedChibiProportion, chibiConfig, args.viewpoint, args.noCharacters, args.framing as any, characterTool
+          promptToBuild, activeContext, effectiveStyle, bgConfig, [], undefined, undefined, mappedChibiProportion, chibiConfig, args.viewpoint, args.noCharacters, args.framing as any, characterTool
       );
       result = built.textPrompt;
 
@@ -566,8 +589,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               if (variation.toLowerCase() === "full-body" || variation.toLowerCase() === "full body") framing = "full-body";
               if (variation.toLowerCase() === "waist-up" || variation.toLowerCase() === "waist up") framing = "waist-up";
 
+              const activeContext = getActiveGameContext();
+              const effectiveStyle = resolveProjectArtStyle(args.style);
               const built = buildIllustrationPrompt(
-                  subject, defaultGameContext, args.style || "", bgConfig, [], undefined, undefined, mappedChibiProportion, chibiConfig, undefined, false, framing
+                  subject, activeContext, effectiveStyle, bgConfig, [], undefined, undefined, mappedChibiProportion, chibiConfig, undefined, false, framing
               );
               
               const promptStr = built.textPrompt;
@@ -682,9 +707,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     else if (name === "mythic_bei_generate") {
       let promptToSend = args.prompt;
-      if (args.style) {
-        const built = buildIllustrationPrompt(args.prompt, defaultGameContext, args.style, defaultBgConfig, []);
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.style);
+      const wantTransparent = Boolean(args.transparentBackground || args.cleanBackground);
+      const effectiveBgConfig: BackgroundConfig = wantTransparent 
+        ? { mode: 'transparent', color: '#FFFFFF', allowTransparency: true } as any 
+        : defaultBgConfig;
+
+      if (!args.prompt.includes("SUBJECT:")) {
+        const built = buildIllustrationPrompt(args.prompt, activeContext, effectiveStyle, effectiveBgConfig, []);
         promptToSend = built.textPrompt;
+      } else if (effectiveStyle && !args.prompt.includes("STYLE:")) {
+        promptToSend += `\nSTYLE: ${effectiveStyle.replace(/^,\s*/, '')}\n`;
+      }
+      if (wantTransparent && !promptToSend.includes("[MANDATORY ISOLATION]")) {
+        promptToSend += `\n[MANDATORY ISOLATION]: Render standalone character cleanly centered on an absolute flat white background (#FFFFFF) with high contrast for alpha cutout. No shadows, no gradients, no scenery.\n`;
       }
       const beiRes = await generateWithBEI({
         prompt: promptToSend,
@@ -712,16 +749,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{
           type: "text",
-          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!${recoveryNotice}\nImage saved to: ${beiRes.filePath}${sizeMB}\nJob ID: ${beiRes.jobId}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\n\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
+          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!${recoveryNotice}\nImage saved to: ${beiRes.filePath}${sizeMB}\nJob ID: ${beiRes.jobId}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\n${wantTransparent ? 'Background: Isolated on flat key for transparent cutout\n' : ''}\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
         }]
       };
     }
     else if (name === "mythic_smart_generate") {
       const engineChoice = args.engine || 'auto';
       let promptToSend = args.prompt;
-      if (args.style) {
-        const built = buildIllustrationPrompt(args.prompt, defaultGameContext, args.style, defaultBgConfig, []);
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.style);
+      const wantTransparent = Boolean(args.transparentBackground || args.cleanBackground);
+      const effectiveBgConfig: BackgroundConfig = wantTransparent 
+        ? { mode: 'transparent', color: '#FFFFFF', allowTransparency: true } as any 
+        : defaultBgConfig;
+
+      if (!args.prompt.includes("SUBJECT:")) {
+        const built = buildIllustrationPrompt(args.prompt, activeContext, effectiveStyle, effectiveBgConfig, []);
         promptToSend = built.textPrompt;
+      } else if (effectiveStyle && !args.prompt.includes("STYLE:")) {
+        promptToSend += `\nSTYLE: ${effectiveStyle.replace(/^,\s*/, '')}\n`;
+      }
+      if (wantTransparent && !promptToSend.includes("[MANDATORY ISOLATION]")) {
+        promptToSend += `\n[MANDATORY ISOLATION]: Render standalone character cleanly centered on an absolute flat white background (#FFFFFF) with high contrast for alpha cutout. No shadows, no gradients, no scenery.\n`;
       }
 
       if (engineChoice === 'prompt-only') {
@@ -854,7 +903,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (args.category) {
         styles = styles.filter(s => s.category?.toLowerCase() === args.category.toLowerCase());
       }
-      let output = `MYTHICFRAME ART STYLE LIBRARY (${styles.length} styles available):\n\n`;
+      if (args.query) {
+        const q = String(args.query).toLowerCase().trim();
+        styles = styles.filter(s => 
+          s.id.toLowerCase().includes(q) ||
+          s.name.toLowerCase().includes(q) ||
+          (s.description || '').toLowerCase().includes(q) ||
+          (s.promptSnippet || '').toLowerCase().includes(q) ||
+          (s.category || '').toLowerCase().includes(q)
+        );
+      }
+      let output = `MYTHICFRAME ART STYLE LIBRARY (${styles.length} styles available${args.query ? `, matching "${args.query}"` : ''}):\n\n`;
       styles.forEach(s => {
         output += `• ID: '${s.id}' - ${s.name} [${s.category || 'General'}]\n  Description: ${s.description}\n  Snippet: "${s.promptSnippet}"\n\n`;
       });
@@ -867,12 +926,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try { projectData = JSON.parse(fs.readFileSync(projectFile, "utf8")); } catch (e) {}
       }
       let targetStyle = ART_STYLES.find(s => s.id === args.styleId);
+      if (!targetStyle && args.styleId) {
+        const needle = args.styleId.toLowerCase().replace(/\s+(art\s+)?style$/, '').trim();
+        targetStyle = ART_STYLES.find(s => 
+          s.id.toLowerCase() === needle || 
+          s.name.toLowerCase() === needle || 
+          s.id.toLowerCase().includes(needle) || 
+          s.name.toLowerCase().includes(needle)
+        );
+      }
       if (!targetStyle && Array.isArray(projectData.customStyles)) {
-        targetStyle = projectData.customStyles.find((s: any) => s.id === args.styleId);
+        const needle = (args.styleId || "").toLowerCase().replace(/\s+(art\s+)?style$/, '').trim();
+        targetStyle = projectData.customStyles.find((s: any) => 
+          s.id === args.styleId || 
+          s.id.toLowerCase() === needle || 
+          s.name.toLowerCase() === needle ||
+          s.name.toLowerCase().includes(needle)
+        );
       }
       if (!targetStyle && !args.customPromptSnippet) {
         return {
-          content: [{ type: "text", text: `Style with ID '${args.styleId}' not found in library. Use 'mythic_list_art_styles' to see valid style IDs.` }],
+          content: [{ type: "text", text: `Style '${args.styleId}' not found in library. Use 'mythic_list_art_styles' to see valid styles.` }],
           isError: true
         };
       }
@@ -912,34 +986,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
     else if (name === "prepare_map_grid_prompt") {
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.styleSnippet || args.style);
       const mapConfig: MapGridConfig = {
           enabled: true, viewMode: args.viewMode || 'isometric', preset: 'custom',
           gridWidth: 10, gridHeight: 10, cellSize: 64, primaryColor: args.primaryColor || '#4CAF50',
           accentColor: '#388E3C', shadowIntensity: 50, lightDirection: 'top-left', detailDensity: 'medium', decorationLevel: 'medium', transparentBackground: true
       } as any;
-      result = buildMapGridPrompt(args.prompt, defaultGameContext, args.styleSnippet || "", mapConfig);
+      result = buildMapGridPrompt(args.prompt, activeContext, effectiveStyle, mapConfig);
       aspectRatio = "16:9";
     }
     else if (name === "prepare_pose_studio_prompt") {
-      // Mock pose data to trigger the pose instructions
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.styleSnippet || args.style);
       const mockPose: PoseData = { joints: [{ name: "head", x: 50, y: 20 }, { name: "chest", x: 50, y: 40 }] } as any;
-      const built = buildPoseStudioPrompt(args.prompt, defaultGameContext, args.styleSnippet || "", defaultBgConfig, [], mockPose);
+      const built = buildPoseStudioPrompt(args.prompt, activeContext, effectiveStyle, defaultBgConfig, [], mockPose);
       result = built.textPrompt;
     }
     else if (name === "prepare_sprite_sheet_prompts") {
-      result = buildSpriteSheetPromptsPrompt(args.prompt, args.frameCount, defaultGameContext);
+      const activeContext = getActiveGameContext();
+      result = buildSpriteSheetPromptsPrompt(args.prompt, args.frameCount, activeContext);
       isImageGen = false;
     }
     else if (name === "prepare_frame_prompt") {
-      result = buildFramePrompt(args.prompt, defaultGameContext, args.styleSnippet || "", args.elements);
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.styleSnippet || args.style);
+      result = buildFramePrompt(args.prompt, activeContext, effectiveStyle, args.elements);
     }
     else if (name === "prepare_background_asset_prompt") {
-      result = buildBackgroundAssetPrompt(args.prompt, defaultGameContext, args.styleSnippet || "", args.patternType as any);
+      const activeContext = getActiveGameContext();
+      const effectiveStyle = resolveProjectArtStyle(args.styleSnippet || args.style);
+      result = buildBackgroundAssetPrompt(args.prompt, activeContext, effectiveStyle, args.patternType as any);
       aspectRatio = "16:9";
     }
     else if (name === "prepare_extract_clothes_prompt") {
+      const activeContext = getActiveGameContext();
       const bg: BackgroundConfig = { mode: args.backgroundMode as any || "transparent" } as any;
-      result = buildExtractClothesPrompt(defaultGameContext, bg);
+      result = buildExtractClothesPrompt(activeContext, bg);
     }
     else if (name === "prepare_card_suggestions_prompt") {
       result = buildCardSuggestionsPrompt(args.artPrompt, args.currentName || "New Card");

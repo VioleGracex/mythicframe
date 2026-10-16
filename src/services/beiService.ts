@@ -237,7 +237,13 @@ export interface BEIAccountDetail {
   slot: number;
   email: string;
   name?: string;
-  tier?: 'free' | 'pro';
+  tier?: 'free' | 'advanced' | 'pro' | 'workspace';
+  capabilities?: {
+    image: boolean;
+    video: boolean;
+    music: boolean;
+    text: boolean;
+  };
   customLimit?: number;
 }
 
@@ -948,6 +954,179 @@ export const getBEIPayloads = async (jobId?: string): Promise<any> => {
     } catch (e) {}
   }
   return { success: false, payloads: [] };
+};
+
+export interface BEIVideoParams {
+  prompt: string;
+  aspectRatio?: '16:9' | '9:16' | '1:1';
+  durationSeconds?: number;
+  motionIntensity?: 'subtle' | 'standard' | 'dynamic';
+  accountSlot?: number;
+  signal?: AbortSignal;
+}
+
+export interface BEIMusicParams {
+  prompt: string;
+  genre?: string;
+  tempo?: number;
+  durationSeconds?: number;
+  mood?: string;
+  isLoopable?: boolean;
+  accountSlot?: number;
+  signal?: AbortSignal;
+}
+
+export const getBEIBridgeStatus = checkBEIConnection;
+
+export const getAccountCapabilities = async (slot: number = 0): Promise<{
+  slot: number;
+  email: string;
+  tier: 'free' | 'advanced' | 'pro' | 'workspace';
+  capabilities: { image: boolean; video: boolean; music: boolean; text: boolean };
+}> => {
+  try {
+    const status = await checkBEIConnection();
+    const accounts = status?.accounts || [];
+    const acc = accounts.find((a: any) => a.slot === slot);
+    if (acc) {
+      return {
+        slot,
+        email: acc.email || '',
+        tier: acc.tier || 'free',
+        capabilities: acc.capabilities || { image: true, video: acc.tier === 'advanced', music: true, text: true }
+      };
+    }
+  } catch (e) {}
+  return {
+    slot,
+    email: '',
+    tier: 'free',
+    capabilities: { image: true, video: false, music: true, text: true }
+  };
+};
+
+export const generateVideoViaBEI = async (params: BEIVideoParams): Promise<{
+  success: boolean;
+  video: string;
+  jobId: string;
+  metadata?: any;
+}> => {
+  const config = getBEIConfig();
+  const port = config.port || DEFAULT_BEI_PORT;
+  const slot = params.accountSlot ?? config.accountSlot ?? 0;
+
+  const videoPromptDirective = `Generate a high-definition video sequence: ${params.prompt}. Aspect ratio ${params.aspectRatio || '16:9'}. Motion: ${params.motionIntensity || 'standard'}. Cinematic lighting, seamless motion rendering.`;
+
+  const payload = {
+    target: config.target,
+    prompt: videoPromptDirective,
+    fullPrompt: videoPromptDirective,
+    aspectRatio: params.aspectRatio || '16:9',
+    accountSlot: slot,
+    timeoutSeconds: Math.max(config.timeoutSeconds || 900, 900),
+    tabMode: config.tabMode || 'new_window_group',
+    bringTabToFront: Boolean(config.bringTabToFront),
+    chatSessionMode: 'new_chat',
+    images: [],
+    preferredBrowser: getEffectiveBEIBrowser(),
+    quality: 'ultra_original',
+    mediaType: 'video'
+  };
+
+  const directUrl = `http://127.0.0.1:${port}/api/bei/generate`;
+  const fallbackUrl = `/api/bei/generate`;
+
+  let response: Response | null = null;
+  try {
+    response = await fetch(directUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: params.signal
+    });
+  } catch {
+    response = await fetch(fallbackUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: params.signal
+    });
+  }
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData.message || `BEI Video generation failed with HTTP ${response.status}`);
+  }
+
+  const result = await response.json();
+  return {
+    success: true,
+    video: result.video || result.image,
+    jobId: result.jobId,
+    metadata: result.metadata
+  };
+};
+
+export const generateMusicViaBEI = async (params: BEIMusicParams): Promise<{
+  success: boolean;
+  audio: string;
+  jobId: string;
+  metadata?: any;
+}> => {
+  const config = getBEIConfig();
+  const port = config.port || DEFAULT_BEI_PORT;
+  const slot = params.accountSlot ?? config.accountSlot ?? 0;
+
+  const audioPromptDirective = `Generate a high quality game audio track: ${params.prompt}. Genre: ${params.genre || 'Soundtrack'}. Tempo: ${params.tempo || 120} BPM. Mood: ${params.mood || 'Immersive'}.${params.isLoopable ? ' Seamless loopable composition.' : ''} Clean mix with crystal clear instrumentation.`;
+
+  const payload = {
+    target: config.target,
+    prompt: audioPromptDirective,
+    fullPrompt: audioPromptDirective,
+    aspectRatio: '1:1',
+    accountSlot: slot,
+    timeoutSeconds: Math.max(config.timeoutSeconds || 900, 900),
+    tabMode: config.tabMode || 'new_window_group',
+    bringTabToFront: Boolean(config.bringTabToFront),
+    chatSessionMode: 'new_chat',
+    images: [],
+    preferredBrowser: getEffectiveBEIBrowser(),
+    quality: 'ultra_original',
+    mediaType: 'audio'
+  };
+
+  const directUrl = `http://127.0.0.1:${port}/api/bei/generate`;
+  const fallbackUrl = `/api/bei/generate`;
+
+  let response: Response | null = null;
+  try {
+    response = await fetch(directUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: params.signal
+    });
+  } catch {
+    response = await fetch(fallbackUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: params.signal
+    });
+  }
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData.message || `BEI Audio generation failed with HTTP ${response.status}`);
+  }
+
+  const result = await response.json();
+  return {
+    success: true,
+    audio: result.audio || result.image,
+    jobId: result.jobId,
+    metadata: result.metadata
+  };
 };
 
 if (typeof window !== 'undefined') {

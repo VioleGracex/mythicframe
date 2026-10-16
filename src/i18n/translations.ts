@@ -26,6 +26,8 @@ export const translations = {
     "style-library": "Style Library",
     downloads: "Downloads",
     batch: "Batch Studio",
+    music: "Game Music & Audio",
+    video: "Cutscenes & Video",
 
     // Dashboard
     welcome: "Welcome to MythicFrame",
@@ -230,6 +232,8 @@ export const translations = {
     "style-library": "Библиотека Стилей",
     downloads: "Загрузки",
     batch: "Пакетная Студия",
+    music: "Музыка и Аудио",
+    video: "Катсцены и Видео",
 
     // Dashboard
     welcome: "Добро пожаловать в MythicFrame",

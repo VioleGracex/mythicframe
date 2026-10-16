@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.2] — 2026-10-16 *(BEI Extension v1.5.3)*
+
+### Fixed
+- **Launcher Resilience & Crash Recovery (`run.bat`)**:
+  - Enforced project directory anchoring (`cd /d "%~dp0"`) preventing script execution in arbitrary directories (Desktop, System32) when triggered by shortcuts or browser protocols.
+  - Added automated cleanup of stale zombie Node processes holding ports `3488` and `58925` prior to server start, eliminating fatal `EADDRINUSE` crashes and permanent pauses.
+  - Replaced fragile `%ERRORLEVEL%` checks and interactive installation prompts with automated multi-path Node & npm detection.
+  - Replaced blind `timeout /t 3` with active health polling, opening the browser only after `http://localhost:3488` responds with HTTP 200.
+- **1-Click Localhost Launcher in Chrome Extension**:
+  - Upgraded "Launch MythicFrame Studio (3488)" button to probe server status before opening.
+  - Automatically triggers server start via registered `mythicframe://` OS protocol if the backend is offline.
+  - Displays real-time startup feedback (`Starting Server...`) and polls localhost health until the Studio UI is ready, eliminating dead `ERR_CONNECTION_REFUSED` tabs.
+  - Automatically reuses and focuses existing Studio tabs when the server is already active.
+
+---
+
 ## [1.6.1] — 2026-10-11 *(BEI Extension v1.5.2)*
 
 ### Added

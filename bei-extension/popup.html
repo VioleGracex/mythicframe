@@ -26,7 +26,7 @@
     <div class="card">
       <div class="card-title">1-Click Localhost Launchers</div>
       <div class="launch-actions">
-        <button id="openStudioBtn" class="btn btn-primary">
+        <button id="openStudioBtn" class="btn btn-primary" title="Launch MythicFrame backend and open studio web app">
           <span class="btn-icon">🚀</span>
           <span>Launch MythicFrame Studio (3488)</span>
         </button>
@@ -35,6 +35,7 @@
           <span>Open BEI Bridge Health (58925)</span>
         </button>
       </div>
+      <div id="launcherFeedback" class="setting-hint" style="margin-top: 8px; display: none;"></div>
     </div>
 
     <!-- Project Folder Settings Card -->
@@ -121,11 +122,36 @@
       </div>
     </div>
 
+    <!-- Selector Health Diagnostic Card -->
+    <div class="card">
+      <div class="card-title flex-between">
+        <span>DOM Selector Diagnostic</span>
+        <button id="runDiagnosticBtn" class="action-btn" style="padding: 2px 8px; font-size: 10px;">Run Test</button>
+      </div>
+      <div id="diagnosticResults" class="perf-grid" style="display: none;">
+        <div class="perf-row">
+          <span class="perf-label">Prompt Composer:</span>
+          <span id="diagComposer" class="perf-val font-mono">--</span>
+        </div>
+        <div class="perf-row">
+          <span class="perf-label">Send Button:</span>
+          <span id="diagSend" class="perf-val font-mono">--</span>
+        </div>
+        <div class="perf-row">
+          <span class="perf-label">Upload Trigger:</span>
+          <span id="diagUpload" class="perf-val font-mono">--</span>
+        </div>
+      </div>
+      <div id="diagnosticHint" class="setting-hint">
+        Tests live DOM selectors in open Gemini tab to prevent generation stalls.
+      </div>
+    </div>
+
     <!-- Footer Controls -->
     <div class="footer-actions">
       <button id="refreshBtn" class="btn-refresh">↻ Refresh State</button>
       <button id="reloadExtBtn" class="btn-refresh" title="Reload extension service worker and scripts into Chrome">🔄 Reload Extension</button>
-      <div class="footer-brand">Zero API Key Mode &bull; v1.4.4</div>
+      <div class="footer-brand">Zero API Key Mode &bull; v1.5.3</div>
     </div>
   </div>
 

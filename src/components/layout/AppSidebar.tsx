@@ -172,6 +172,8 @@ const AppSidebar: React.FC<AppSidebarProps> = ({
                <NavButton targetMode="resize" />
                <NavButton targetMode="animation" />
                <NavButton targetMode="batch" />
+               <NavButton targetMode="video" />
+               <NavButton targetMode="music" />
              </div>
            </div>
         </div>

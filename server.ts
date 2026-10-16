@@ -4,15 +4,30 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { execSync } from "child_process";
 
 import { beiBridge } from "./src/server/beiBridge";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const OUTPUTS_DIR = path.join(__dirname, "outputs");
+const LIBRARY_DIR = path.join(OUTPUTS_DIR, "library");
+if (!fs.existsSync(LIBRARY_DIR)) {
+  fs.mkdirSync(LIBRARY_DIR, { recursive: true });
+}
+const VIDEO_DIR = path.join(OUTPUTS_DIR, "video");
+if (!fs.existsSync(VIDEO_DIR)) {
+  fs.mkdirSync(VIDEO_DIR, { recursive: true });
+}
+const MUSIC_DIR = path.join(OUTPUTS_DIR, "music");
+if (!fs.existsSync(MUSIC_DIR)) {
+  fs.mkdirSync(MUSIC_DIR, { recursive: true });
+}
+
 const db = new Database("assets.db");
 
-// Initialize DB
+// Initialize DB schema & migrate missing columns
 db.exec(`
   CREATE TABLE IF NOT EXISTS assets (
     id TEXT PRIMARY KEY,
@@ -20,11 +35,64 @@ db.exec(`
     prompt TEXT,
     type TEXT,
     imageUrl TEXT,
+    thumbnailUrl TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
 
+try {
+  db.exec("ALTER TABLE assets ADD COLUMN thumbnailUrl TEXT;");
+} catch (e) {
+  // column already exists
+}
+
+function syncMcpBuild() {
+  const mcpSrcPath = path.join(__dirname, "src", "mcp", "index.ts");
+  const mcpOutPath = path.join(__dirname, "mcp-server", "index.js");
+  try {
+    if (!fs.existsSync(mcpOutPath)) {
+      console.log("🔨 [MCP Sync] mcp-server/index.js not found. Compiling...");
+      execSync("npm run build:mcp", { stdio: "inherit", cwd: __dirname });
+      return;
+    }
+    const srcStat = fs.statSync(mcpSrcPath);
+    const outStat = fs.statSync(mcpOutPath);
+    if (srcStat.mtimeMs > outStat.mtimeMs) {
+      console.log("🔨 [MCP Sync] src/mcp/ is newer than mcp-server/index.js. Rebuilding MCP bundle...");
+      execSync("npm run build:mcp", { stdio: "inherit", cwd: __dirname });
+      console.log("✅ [MCP Sync] MCP server bundle successfully updated.");
+    }
+  } catch (e: any) {
+    console.warn("⚠️ [MCP Sync] Automatic MCP rebuild check failed:", e.message);
+  }
+}
+
+function offloadBase64Image(dataUrl: string, assetId: string, suffix: string = ""): string {
+  if (!dataUrl || !dataUrl.startsWith("data:image/")) {
+    return dataUrl;
+  }
+  try {
+    const match = dataUrl.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+    if (!match) return dataUrl;
+    let ext = match[1].toLowerCase();
+    if (ext === "jpeg") ext = "jpg";
+    if (ext.includes("svg")) ext = "svg";
+    const buffer = Buffer.from(match[2], "base64");
+    const safeId = assetId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const fileName = `${safeId}${suffix ? `_${suffix}` : ""}_${Date.now()}.${ext}`;
+    const filePath = path.join(LIBRARY_DIR, fileName);
+    fs.writeFileSync(filePath, buffer);
+    return `/outputs/library/${fileName}`;
+  } catch (err) {
+    console.warn("Could not offload base64 image to disk:", err);
+    return dataUrl;
+  }
+}
+
 async function startServer() {
+  // Auto-sync MCP build if needed
+  syncMcpBuild();
+
   // Start BEI Bridge on unique port (58925)
   try {
     await beiBridge.start();
@@ -151,23 +219,108 @@ async function startServer() {
     beiBridge.handleRefetchRequest(req as any, res as any);
   });
 
-  // API Routes
+  // Static outputs directory (for static library images)
+  app.use("/outputs", express.static(path.join(__dirname, "outputs")));
+
+  // API Routes with Pagination, Search & Binary Disk Offloading
   app.get("/api/assets", (req, res) => {
-    const assets = db.prepare("SELECT * FROM assets ORDER BY createdAt DESC").all();
-    res.json(assets);
+    try {
+      const limitParam = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+      const offsetParam = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+      const searchParam = req.query.search ? String(req.query.search).trim() : "";
+      const typeParam = req.query.type ? String(req.query.type).trim() : "";
+
+      const whereClauses: string[] = [];
+      const params: any[] = [];
+
+      if (searchParam) {
+        whereClauses.push("(name LIKE ? OR prompt LIKE ?)");
+        params.push(`%${searchParam}%`, `%${searchParam}%`);
+      }
+      if (typeParam && typeParam !== "all") {
+        whereClauses.push("type = ?");
+        params.push(typeParam);
+      }
+
+      const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+      const totalCountRow = db.prepare(`SELECT COUNT(*) as count FROM assets ${whereSql}`).get(...params) as { count: number };
+      const total = totalCountRow ? totalCountRow.count : 0;
+
+      let querySql = `SELECT id, name, prompt, type, imageUrl, thumbnailUrl, createdAt FROM assets ${whereSql} ORDER BY createdAt DESC`;
+      const queryParams = [...params];
+
+      if (limitParam && limitParam > 0) {
+        querySql += ` LIMIT ? OFFSET ?`;
+        queryParams.push(limitParam, offsetParam);
+      }
+
+      const assets = db.prepare(querySql).all(...queryParams);
+
+      // Backwards compatible: if client didn't supply pagination params, return array; otherwise return paginated structure
+      if (req.query.limit !== undefined || req.query.offset !== undefined || req.query.page !== undefined || req.query.search !== undefined) {
+        res.json({
+          items: assets,
+          total,
+          limit: limitParam || total,
+          offset: offsetParam
+        });
+      } else {
+        res.json(assets);
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.post("/api/assets", (req, res) => {
-    const { id, name, prompt, type, imageUrl } = req.body;
-    const stmt = db.prepare("INSERT INTO assets (id, name, prompt, type, imageUrl) VALUES (?, ?, ?, ?, ?)");
-    stmt.run(id, name, prompt, type, imageUrl);
-    res.json({ success: true });
+    try {
+      const { id, name, prompt, type, imageUrl, thumbnailUrl } = req.body;
+      const safeId = id || `asset_${Date.now()}`;
+      
+      // Save large Base64 blobs to outputs/library/ as binary files
+      const storedImageUrl = offloadBase64Image(imageUrl, safeId);
+      const storedThumbnailUrl = thumbnailUrl ? offloadBase64Image(thumbnailUrl, safeId, "thumb") : storedImageUrl;
+
+      const stmt = db.prepare(`
+        INSERT INTO assets (id, name, prompt, type, imageUrl, thumbnailUrl)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          prompt = excluded.prompt,
+          type = excluded.type,
+          imageUrl = excluded.imageUrl,
+          thumbnailUrl = excluded.thumbnailUrl
+      `);
+      stmt.run(safeId, name || "Untitled Asset", prompt || "", type || "image", storedImageUrl, storedThumbnailUrl);
+      res.json({ success: true, id: safeId, imageUrl: storedImageUrl, thumbnailUrl: storedThumbnailUrl });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.delete("/api/assets/:id", (req, res) => {
-    const { id } = req.params;
-    db.prepare("DELETE FROM assets WHERE id = ?").run(id);
-    res.json({ success: true });
+    try {
+      const { id } = req.params;
+      const existing = db.prepare("SELECT imageUrl, thumbnailUrl FROM assets WHERE id = ?").get(id) as { imageUrl?: string, thumbnailUrl?: string } | undefined;
+      
+      if (existing) {
+        // Clean up static binary files on disk if present
+        [existing.imageUrl, existing.thumbnailUrl].forEach((url) => {
+          if (url && url.startsWith("/outputs/library/")) {
+            const fileName = path.basename(url);
+            const fullPath = path.join(LIBRARY_DIR, fileName);
+            if (fs.existsSync(fullPath)) {
+              try { fs.unlinkSync(fullPath); } catch (e) {}
+            }
+          }
+        });
+      }
+
+      db.prepare("DELETE FROM assets WHERE id = ?").run(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.post("/api/config/gemini-key", (req, res) => {

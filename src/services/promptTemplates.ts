@@ -15,11 +15,91 @@ import {
   UIMode,
   SpriteStripConfig,
   CharacterToolState,
-  CameraFraming
+  CameraFraming,
+  ArtStyle
 } from "../types.js";
 import { CHIBI_STYLE_CONFIG } from "../constants/gacha.js";
 import { DEFAULT_BACKGROUND_CONFIG } from "../constants/backgrounds.js";
 import { normalizeFramingId } from "../constants/framing.js";
+import { ART_STYLES } from "../constants/artStyles.js";
+
+/**
+ * Resolves an art style identifier, partial name, project name, or raw prompt snippet
+ * into a rich, high-fidelity prompt snippet for image generation models.
+ */
+export const resolveArtStyleSnippet = (
+  styleInput?: string | null,
+  activeArtStyle?: { id?: string; name?: string; promptSnippet?: string } | null,
+  projectName?: string | null,
+  customStyles?: ArtStyle[] | null
+): string => {
+  if (!styleInput || !styleInput.trim()) {
+    return activeArtStyle?.promptSnippet || '';
+  }
+
+  const raw = styleInput.trim();
+  const lower = raw.toLowerCase();
+
+  // 1. Explicit aliases for "none" or "default"
+  if (['none', 'no style', 'no_style'].includes(lower)) {
+    return '';
+  }
+  if (['default', 'project', 'active', 'current', 'auto'].includes(lower)) {
+    return activeArtStyle?.promptSnippet || '';
+  }
+
+  // 2. Project Name match (e.g. "Kingdoms Divided", "kingdoms divided art style", "kingdoms diveded")
+  if (projectName) {
+    const projLower = projectName.toLowerCase();
+    if (lower === projLower || lower.includes(projLower) || projLower.includes(lower)) {
+      if (activeArtStyle?.promptSnippet) {
+        return activeArtStyle.promptSnippet;
+      }
+    }
+  }
+
+  // Also catch "kingdoms divided" explicitly
+  if (lower.includes('kingdoms divided') || lower.includes('kingdoms diveded')) {
+    const kdStyle = ART_STYLES.find(s => s.id === 'kingdoms_divided_char');
+    if (kdStyle?.promptSnippet) return kdStyle.promptSnippet;
+    if (activeArtStyle?.promptSnippet) return activeArtStyle.promptSnippet;
+  }
+
+  // 3. Search ART_STYLES catalog and customStyles
+  const allStyles: ArtStyle[] = [...(customStyles || []), ...ART_STYLES];
+
+  // Exact ID match
+  const byId = allStyles.find(s => s.id.toLowerCase() === lower);
+  if (byId) return byId.promptSnippet;
+
+  // Exact Name match
+  const byName = allStyles.find(s => s.name.toLowerCase() === lower);
+  if (byName) return byName.promptSnippet;
+
+  // Substring match on ID or Name (strip trailing "art style" / "style")
+  const normalizedSearch = lower.replace(/\s+(art\s+)?style$/, '').trim();
+  const bySub = allStyles.find(s => 
+    s.id.toLowerCase() === normalizedSearch ||
+    s.name.toLowerCase() === normalizedSearch ||
+    s.id.toLowerCase().includes(normalizedSearch) || 
+    s.name.toLowerCase().includes(normalizedSearch) ||
+    normalizedSearch.includes(s.id.toLowerCase()) ||
+    normalizedSearch.includes(s.name.toLowerCase())
+  );
+  if (bySub) return bySub.promptSnippet;
+
+  // 4. If it's already a full descriptive snippet (has commas or multiple visual words), use it directly
+  if (raw.includes(',') || raw.split(/\s+/).length > 3) {
+    return raw.startsWith(',') ? raw : `, ${raw}`;
+  }
+
+  // 5. Fallback: If style looks like a raw single word or short phrase, check if activeArtStyle exists
+  if (activeArtStyle?.promptSnippet && !activeArtStyle.promptSnippet.toLowerCase().includes(lower)) {
+    return `${activeArtStyle.promptSnippet}, ${raw}`;
+  }
+  return raw.startsWith(',') ? raw : `, ${raw}`;
+};
+
 
 /**
  * Returns the exact framing prompt override for any of the 13 shot-distance presets
@@ -467,8 +547,9 @@ export const buildIllustrationPrompt = (
     }
   }
 
-  if (styleSnippet) {
-    fullPrompt += `STYLE: ${styleSnippet}\n`;
+  const effectiveStyle = resolveArtStyleSnippet(styleSnippet);
+  if (effectiveStyle) {
+    fullPrompt += `STYLE: ${effectiveStyle.replace(/^,\s*/, '')}\n`;
     fullPrompt += `(Ensure the style strictly matches the above snippet, do not revert to realism or generic defaults.)\n`;
   } else {
     fullPrompt += `STYLE: Clean, neutral, high-quality digital art without additional stylistic flourishes.\n`;

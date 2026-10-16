@@ -173,8 +173,8 @@ const hexToRgb = (hex: string) => {
 };
 
 /**
- * Transparent NEO v2 (SteamSafe)
- * Professional Background Removal & Achromatic Neutralization
+ * Transparent NEO v2 (SteamSafe Ultra Matting)
+ * Professional Background Removal, Multi-Point Sampling & Achromatic Neutralization
  */
 export const removeBackgroundNeo = (
   srcDataUrl: string,
@@ -208,162 +208,272 @@ export const removeBackgroundNeo = (
       const data = imageData.data;
       const w = canvas.width;
       const h = canvas.height;
+      const totalPixels = w * h;
       
-      const visited = new Uint8Array(w * h);
-      const isBackground = new Uint8Array(w * h);
-      const alphaMatte = new Float32Array(w * h);
+      const visited = new Uint8Array(totalPixels);
+      const isBackground = new Uint8Array(totalPixels);
+      const alphaMatte = new Float32Array(totalPixels);
 
-      // Pass 0: Calibration (Aggressive Hue Profile)
+      // --- Pass 0: Multi-Point Perimeter & Corner Calibration ---
       let hexKey = config.keyColor || "#FFFFFF";
-      const { r: targetR, g: targetG, b: targetB } = hexToRgb(hexKey);
-      const keyHsv = rgbToHsv(targetR, targetG, targetB);
+      const userKeyRgb = hexToRgb(hexKey);
 
-      let sumR = 0, sumG = 0, sumB = 0, samples = 0;
-      const sampleBorder = (x: number, y: number) => {
-        const p = (y * w + x) * 4;
-        const dr = data[p] - targetR, dg = data[p+1] - targetG, db = data[p+2] - targetB;
-        // Increased threshold to 200 to catch more variations of the key color
-        if (Math.sqrt(dr*dr + dg*dg + db*db) < 200) {
-          sumR += data[p]; sumG += data[p+1]; sumB += data[p+2];
-          samples++;
+      // Sample a 5x5 patch at a coordinate to avoid single-pixel noise
+      const samplePatch = (cx: number, cy: number) => {
+        let pr = 0, pg = 0, pb = 0, count = 0;
+        for (let dy = -2; dy <= 2; dy++) {
+          const sy = Math.max(0, Math.min(h - 1, cy + dy));
+          for (let dx = -2; dx <= 2; dx++) {
+            const sx = Math.max(0, Math.min(w - 1, cx + dx));
+            const p = (sy * w + sx) * 4;
+            pr += data[p];
+            pg += data[p + 1];
+            pb += data[p + 2];
+            count++;
+          }
         }
-      };
-      // Samples the outer 5px shell
-      for(let step=0; step<5; step++) {
-        for(let x=step; x<w-step; x+=10) { sampleBorder(x, step); sampleBorder(x, h-1-step); }
-        for(let y=step; y<h-step; y+=10) { sampleBorder(step, y); sampleBorder(w-1-step, y); }
-      }
-
-      const bgR = samples > 0 ? sumR / samples : targetR;
-      const bgG = samples > 0 ? sumG / samples : targetG;
-      const bgB = samples > 0 ? sumB / samples : targetB;
-
-      const getDist = (idx: number) => {
-        const dr = data[idx] - bgR, dg = data[idx+1] - bgG, db = data[idx+2] - bgB;
-        return Math.sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114);
+        return { r: pr / count, g: pg / count, b: pb / count };
       };
 
-      // Pass 1: BFS Isolation (Edge-connected background)
-      const stack: number[] = [];
-      const pushHard = (x: number, y: number) => {
+      const cornerTL = samplePatch(2, 2);
+      const cornerTR = samplePatch(w - 3, 2);
+      const cornerBL = samplePatch(2, h - 3);
+      const cornerBR = samplePatch(w - 3, h - 3);
+
+      // Auto-detect dominant chroma key (Magenta, Green, or User Key)
+      const detectChroma = (c: { r: number, g: number, b: number }) => {
+        const isMagenta = c.r > 190 && c.b > 190 && c.g < 120;
+        const isGreen = c.g > 190 && c.r < 120 && c.b < 120;
+        if (isMagenta) return { r: 255, g: 0, b: 255 };
+        if (isGreen) return { r: 0, g: 255, b: 0 };
+        return null;
+      };
+
+      const detectedCornerChroma = detectChroma(cornerTL) || detectChroma(cornerTR) || detectChroma(cornerBL) || detectChroma(cornerBR);
+      const effectiveKeyRgb = detectedCornerChroma || userKeyRgb;
+      const keyHsv = rgbToHsv(effectiveKeyRgb.r, effectiveKeyRgb.g, effectiveKeyRgb.b);
+
+      // Bilinear background color field to handle subtle top-to-bottom lighting gradients
+      const getExpectedBg = (x: number, y: number) => {
+        const u = w > 1 ? x / (w - 1) : 0;
+        const v = h > 1 ? y / (h - 1) : 0;
+        const r = (1 - u) * (1 - v) * cornerTL.r + u * (1 - v) * cornerTR.r + (1 - u) * v * cornerBL.r + u * v * cornerBR.r;
+        const g = (1 - u) * (1 - v) * cornerTL.g + u * (1 - v) * cornerTR.g + (1 - u) * v * cornerBL.g + u * v * cornerBR.g;
+        const b = (1 - u) * (1 - v) * cornerTL.b + u * (1 - v) * cornerTR.b + (1 - u) * v * cornerBL.b + u * v * cornerBR.b;
+        return { r, g, b };
+      };
+
+      // Perceptual distance (ITU-R BT.601 weighted)
+      const getDist = (p: number, x: number, y: number) => {
+        const idx = p * 4;
+        const bg = getExpectedBg(x, y);
+        const dr = data[idx] - bg.r;
+        const dg = data[idx + 1] - bg.g;
+        const db = data[idx + 2] - bg.b;
+        return Math.sqrt(dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114);
+      };
+
+      // --- Pass 1: BFS Boundary Isolation ---
+      const tolBg = config.tolBg ?? 60;
+      const tolEdge = Math.max(tolBg + 5, config.tolEdge ?? 75);
+      const queue: number[] = [];
+      let head = 0;
+
+      const pushBoundary = (x: number, y: number) => {
         const p = y * w + x;
-        if (!visited[p] && getDist(p * 4) <= config.tolBg) {
-          visited[p] = 1; stack.push(p);
+        if (!visited[p] && getDist(p, x, y) <= tolBg) {
+          visited[p] = 1;
+          queue.push(p);
         }
       };
-      for (let x = 0; x < w; x++) { pushHard(x, 0); pushHard(x, h - 1); }
-      for (let y = 0; y < h; y++) { pushHard(0, y); pushHard(w - 1, y); }
 
-      while (stack.length > 0) {
-        const p = stack.pop()!;
-        isBackground[p] = 1; alphaMatte[p] = 0;
+      // Seed all 4 edges
+      for (let x = 0; x < w; x++) { pushBoundary(x, 0); pushBoundary(x, h - 1); }
+      for (let y = 0; y < h; y++) { pushBoundary(0, y); pushBoundary(w - 1, y); }
+
+      while (head < queue.length) {
+        const p = queue[head++];
+        isBackground[p] = 1;
+        alphaMatte[p] = 0;
         const x = p % w, y = Math.floor(p / w);
-        if (x > 0) pushHard(x - 1, y); if (x < w - 1) pushHard(x + 1, y);
-        if (y > 0) pushHard(x, y - 1); if (y < h - 1) pushHard(x, y + 1);
+
+        if (x > 0) pushBoundary(x - 1, y);
+        if (x < w - 1) pushBoundary(x + 1, y);
+        if (y > 0) pushBoundary(x, y - 1);
+        if (y < h - 1) pushBoundary(x, y + 1);
       }
 
-      // Pass 2: NEO Hole Healing (trapped background islands)
+      // --- Pass 2: Intelligent Trapped Hole Healing ---
       if (config.removeHoles) {
-        const minHoleSize = Math.floor(5 + (config.healingPower * 3));
-        const holeTolerance = config.tolBg * 1.1; // Slightly more aggressive for trapped gaps
-        
-        for (let i = 0; i < w * h; i++) {
-          if (!visited[i] && getDist(i * 4) <= holeTolerance) {
-            const island: number[] = []; 
-            const islandStack = [i]; 
+        const minHoleSize = Math.max(8, Math.floor(6 + (config.healingPower * 0.2)));
+        const holeTolerance = tolBg * 1.08;
+
+        for (let i = 0; i < totalPixels; i++) {
+          const ix = i % w, iy = Math.floor(i / w);
+          if (!visited[i] && getDist(i, ix, iy) <= holeTolerance) {
+            const island: number[] = [];
+            const islandQueue: number[] = [i];
+            let islandHead = 0;
             visited[i] = 1;
-            
-            while (islandStack.length > 0) {
-              const p = islandStack.pop()!; island.push(p);
+
+            let islandSumDist = 0;
+            while (islandHead < islandQueue.length) {
+              const p = islandQueue[islandHead++];
+              island.push(p);
               const x = p % w, y = Math.floor(p / w);
-              const neighbors = [p-1, p+1, p-w, p+w];
-              for(const n of neighbors) {
-                if(n >= 0 && n < w*h && !visited[n] && getDist(n*4) <= holeTolerance) {
-                  visited[n] = 1; islandStack.push(n);
+              islandSumDist += getDist(p, x, y);
+
+              const neighbors = [
+                x > 0 ? p - 1 : -1,
+                x < w - 1 ? p + 1 : -1,
+                y > 0 ? p - w : -1,
+                y < h - 1 ? p + w : -1
+              ];
+
+              for (const n of neighbors) {
+                if (n >= 0 && !visited[n]) {
+                  const nx = n % w, ny = Math.floor(n / w);
+                  if (getDist(n, nx, ny) <= holeTolerance) {
+                    visited[n] = 1;
+                    islandQueue.push(n);
+                  }
                 }
               }
             }
-            
-            // If the island is larger than the noise threshold, treat it as a background hole
-            if (island.length >= minHoleSize) {
-              for (const p of island) { 
-                 isBackground[p] = 1; 
-                 alphaMatte[p] = 0; 
+
+            // Protect small character details (eyes, teeth, metallic studs)
+            // Only erase enclosed regions that are true background holes
+            const avgDist = islandSumDist / island.length;
+            if (island.length >= minHoleSize && avgDist <= tolBg * 0.95) {
+              for (const p of island) {
+                isBackground[p] = 1;
+                alphaMatte[p] = 0;
               }
             }
           }
         }
       }
 
-      // Pass 3: Soft Matte + Alpha Bias (SteamSafe Edge Extension)
+      // --- Pass 3: Morphological Anti-Aliased Edge Softening ---
       const bias = (config.alphaBias || 0) / 100;
-      for (let i = 0; i < w * h; i++) {
-        if (!isBackground[i]) {
+      const softRadius = Math.max(1, Math.min(5, Math.round(config.softRadius || 2)));
+      const edgeBand = new Uint8Array(totalPixels);
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          if (isBackground[i]) continue;
+
+          // Default full opacity for foreground
           alphaMatte[i] = 1.0;
-          const x = i % w, y = Math.floor(i / w);
-          // Check for nearby background pixels to trigger matting
-          if (x > 0 && isBackground[i-1] || x < w-1 && isBackground[i+1] || y > 0 && isBackground[i-w] || y < h-1 && isBackground[i+w]) {
-            const d = getDist(i * 4);
-            if (d < config.tolEdge) {
-               let factor = (d - config.tolBg) / (config.tolEdge - config.tolBg);
-               factor = Math.max(0, Math.min(1, factor));
-               alphaMatte[i] = factor + (1 - factor) * bias;
+
+          // Check if within softRadius of background
+          let nearBg = false;
+          for (let ry = -softRadius; ry <= softRadius && !nearBg; ry++) {
+            const ny = y + ry;
+            if (ny < 0 || ny >= h) continue;
+            for (let rx = -softRadius; rx <= softRadius; rx++) {
+              const nx = x + rx;
+              if (nx < 0 || nx >= w) continue;
+              if (isBackground[ny * w + nx]) {
+                nearBg = true;
+                break;
+              }
+            }
+          }
+
+          if (nearBg) {
+            edgeBand[i] = 1;
+            const d = getDist(i, x, y);
+            if (d < tolEdge) {
+              const range = Math.max(1, tolEdge - tolBg);
+              const factor = Math.max(0, Math.min(1, (d - tolBg) / range));
+              // Hermite S-Curve for smooth anti-aliased edge transition
+              const smoothT = factor * factor * (3 - 2 * factor);
+              alphaMatte[i] = Math.max(0, Math.min(1, smoothT + (1 - smoothT) * bias));
             }
           }
         }
       }
 
-      // Pass 4 & 4.5: Decontam + SteamSafe Neutralization
-      const decontam = config.decontamStrength / 100;
+      // Sub-pixel 3x3 Gaussian smoothing on the edge transition band to eliminate pixel staircasing
+      const smoothedAlpha = new Float32Array(alphaMatte);
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const i = y * w + x;
+          if (edgeBand[i] && alphaMatte[i] > 0 && alphaMatte[i] < 1) {
+            const sum =
+              alphaMatte[i - w - 1] * 0.0625 + alphaMatte[i - w] * 0.125 + alphaMatte[i - w + 1] * 0.0625 +
+              alphaMatte[i - 1] * 0.125 + alphaMatte[i] * 0.25 + alphaMatte[i + 1] * 0.125 +
+              alphaMatte[i + w - 1] * 0.0625 + alphaMatte[i + w] * 0.125 + alphaMatte[i + w + 1] * 0.0625;
+            smoothedAlpha[i] = sum;
+          }
+        }
+      }
+
+      // --- Pass 4: Chroma Defringing & SteamSafe Achromatic Neutralization ---
+      const decontam = (config.decontamStrength ?? 85) / 100;
       const steamSafe = config.steamSafe ?? true;
       const neutStrength = (config.neutralizeStrength ?? 85) / 100;
 
-      for (let i = 0; i < w * h; i++) {
-        const a = alphaMatte[i]; const idx = i * 4;
-        if (a === 0) { data[idx + 3] = 0; continue; }
-        
-        let r = data[idx], g = data[idx+1], b = data[idx+2];
-        
-        // Pass 4: Unblend (Chroma Defringing)
-        if (a < 1.0) {
-          r = (r - (1 - a) * bgR * decontam) / (1 - (1 - a) * decontam);
-          g = (g - (1 - a) * bgG * decontam) / (1 - (1 - a) * decontam);
-          b = (b - (1 - a) * bgB * decontam) / (1 - (1 - a) * decontam);
-        }
-
-        // Pass 4.5: SteamSafe (Achromatic Neutralization)
-        if (steamSafe && a < 0.6) {
-           const pnlHsv = rgbToHsv(r, g, b);
-           const hueDist = Math.min(Math.abs(pnlHsv.h - keyHsv.h), 360 - Math.abs(pnlHsv.h - keyHsv.h));
-           
-           if (hueDist < 50 && pnlHsv.s > 0.05) {
-              const lum = (r * 0.299 + g * 0.587 + b * 0.114);
-              const isSparks = (pnlHsv.h > 15 && pnlHsv.h < 75 && pnlHsv.s > 0.5);
-              if (!isSparks) {
-                 const gray = lum;
-                 const k = neutStrength * (1 - a);
-                 r = r * (1 - k) + gray * k;
-                 g = g * (1 - k) + gray * k;
-                 b = b * (1 - k) + gray * k;
-              }
-           }
-        }
-
-        data[idx] = Math.max(0, Math.min(255, r));
-        data[idx+1] = Math.max(0, Math.min(255, g));
-        data[idx+2] = Math.max(0, Math.min(255, b));
-        data[idx+3] = a * 255;
-      }
-
-      // FX Mode Glow Guard
-      if (config.fxMode) {
-        for (let i = 0; i < w * h; i++) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
           const idx = i * 4;
-          if (data[idx+3] === 0) continue;
-          const lum = (data[idx] * 0.299 + data[idx+1] * 0.587 + data[idx+2] * 0.114);
-          if (lum > 200 && data[idx+3] < 120) {
-             data[idx+3] = Math.max(data[idx+3], (lum - 200) * 1.5);
+          const a = smoothedAlpha[i];
+
+          if (a <= 0.005) {
+            data[idx + 3] = 0;
+            continue;
           }
+
+          let r = data[idx];
+          let g = data[idx + 1];
+          let b = data[idx + 2];
+          const bg = getExpectedBg(x, y);
+
+          // Straight Alpha Unblending (Chroma Spill Suppression)
+          if (a < 1.0) {
+            const effAlpha = Math.max(0.12, a);
+            const factor = (1 - a) * decontam;
+            r = (r - factor * bg.r) / (1 - factor * (1 - effAlpha));
+            g = (g - factor * bg.g) / (1 - factor * (1 - effAlpha));
+            b = (b - factor * bg.b) / (1 - factor * (1 - effAlpha));
+          }
+
+          // SteamSafe: Achromatic Neutralization on residual fringe pixels
+          if (steamSafe && a < 0.75) {
+            const hsv = rgbToHsv(r, g, b);
+            const hueDist = Math.min(Math.abs(hsv.h - keyHsv.h), 360 - Math.abs(hsv.h - keyHsv.h));
+
+            if (hueDist < 50 && hsv.s > 0.05) {
+              const lum = r * 0.299 + g * 0.587 + b * 0.114;
+              const isSparks = (hsv.h > 15 && hsv.h < 75 && hsv.s > 0.5);
+              if (!isSparks) {
+                const k = neutStrength * (1 - a);
+                r = r * (1 - k) + lum * k;
+                g = g * (1 - k) + lum * k;
+                b = b * (1 - k) + lum * k;
+              }
+            }
+          }
+
+          // FX Mode Glow Guard: protect bright ethereal particle effects
+          if (config.fxMode) {
+            const lum = r * 0.299 + g * 0.587 + b * 0.114;
+            if (lum > 195 && a < 0.55) {
+              const glowAlpha = Math.min(1.0, a + ((lum - 195) / 60) * 0.6);
+              data[idx + 3] = Math.round(glowAlpha * 255);
+            } else {
+              data[idx + 3] = Math.round(a * 255);
+            }
+          } else {
+            data[idx + 3] = Math.round(a * 255);
+          }
+
+          data[idx] = Math.max(0, Math.min(255, Math.round(r)));
+          data[idx + 1] = Math.max(0, Math.min(255, Math.round(g)));
+          data[idx + 2] = Math.max(0, Math.min(255, Math.round(b)));
         }
       }
 
@@ -376,7 +486,8 @@ export const removeBackgroundNeo = (
 };
 
 /**
- * AI-Assisted Background & Hole Removal (Legacy Standard)
+ * AI-Assisted Background & Hole Removal (Unified Standard)
+ * Delegates to Ultra Matting engine with sensible defaults
  */
 export const removeBackground = (
   srcDataUrl: string, 
@@ -385,101 +496,19 @@ export const removeBackground = (
   healing: number = 100,
   keyColor?: string
 ): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "Anonymous";
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      if (!ctx) { reject(new Error('No context')); return; }
-      ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-      const w = canvas.width, h = canvas.height;
-      const visited = new Uint8Array(w * h);
-      const isBackground = new Uint8Array(w * h);
-      
-      let rT: number, gT: number, bT: number;
-
-      if (keyColor) {
-        const rgb = hexToRgb(keyColor);
-        rT = rgb.r; gT = rgb.g; bT = rgb.b;
-      } else {
-        // Robust Sampling: Check all 4 corners and pick the most likely background color
-        const corners = [
-          { r: data[0], g: data[1], b: data[2] }, // Top-Left
-          { r: data[(w - 1) * 4], g: data[(w - 1) * 4 + 1], b: data[(w - 1) * 4 + 2] }, // Top-Right
-          { r: data[(h - 1) * w * 4], g: data[(h - 1) * w * 4 + 1], b: data[(h - 1) * w * 4 + 2] }, // Bottom-Left
-          { r: data[((h - 1) * w + (w - 1)) * 4], g: data[((h - 1) * w + (w - 1)) * 4 + 1], b: data[((h - 1) * w + (w - 1)) * 4 + 2] } // Bottom-Right
-        ];
-
-        // If we see magenta-like color in any corner, prioritize it (as it's our standard key)
-        const magentaCorner = corners.find(c => {
-          const dr = c.r - 255, dg = c.g - 0, db = c.b - 255;
-          return Math.sqrt(dr*dr + dg*dg + db*db) < 150;
-        });
-
-        const targetColor = magentaCorner || corners[0];
-        rT = targetColor.r; gT = targetColor.g; bT = targetColor.b;
-      }
-
-      const getDist = (idx: number) => Math.sqrt((data[idx] - rT)**2 + (data[idx+1] - gT)**2 + (data[idx+2] - bT)**2);
-
-      const stack: number[] = [];
-      const pushExterior = (x: number, y: number) => {
-        const p = y * w + x;
-        if (!visited[p] && getDist(p * 4) <= tolerance) { visited[p] = 1; stack.push(p); }
-      };
-      for (let x = 0; x < w; x++) { pushExterior(x, 0); pushExterior(x, h - 1); }
-      for (let y = 0; y < h; y++) { pushExterior(0, y); pushExterior(w - 1, y); }
-
-      while (stack.length > 0) {
-        const p = stack.pop()!; isBackground[p] = 1;
-        const x = p % w, y = Math.floor(p / w);
-        if (x > 0) pushExterior(x - 1, y); if (x < w - 1) pushExterior(x + 1, y);
-        if (y > 0) pushExterior(x, y - 1); if (y < h - 1) pushExterior(x, y + 1);
-      }
-
-      if (removeHoles) {
-        const minHoleSize = Math.floor(5 + (healing * 3)); const holeTolerance = tolerance * 0.8;
-        for (let i = 0; i < w * h; i++) {
-          if (!visited[i] && getDist(i * 4) <= holeTolerance) {
-            const island: number[] = []; const islandStack = [i]; visited[i] = 1;
-            while (islandStack.length > 0) {
-              const p = islandStack.pop()!; island.push(p);
-              const x = p % w, y = Math.floor(p / w);
-              if (x > 0 && !visited[p-1] && getDist((p-1)*4) <= holeTolerance) { visited[p-1] = 1; islandStack.push(p-1); }
-              if (x < w - 1 && !visited[p+1] && getDist((p+1)*4) <= holeTolerance) { visited[p+1] = 1; islandStack.push(p+1); }
-              if (y > 0 && !visited[p-w] && getDist((p-w)*4) <= holeTolerance) { visited[p-w] = 1; islandStack.push(p-w); }
-              if (y < h - 1 && !visited[p+w] && getDist((p+w)*4) <= holeTolerance) { visited[p+w] = 1; islandStack.push(p+w); }
-            }
-            if (island.length >= minHoleSize) { for (const p of island) isBackground[p] = 1; }
-          }
-        }
-      }
-
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const p = y * w + x; const idx = p * 4;
-          if (isBackground[p]) { data[idx + 3] = 0; } else {
-            let neighborsBg = 0;
-            if (x > 0 && isBackground[p-1]) neighborsBg++; if (x < w - 1 && isBackground[p+1]) neighborsBg++;
-            if (y > 0 && isBackground[p-w]) neighborsBg++; if (y < h - 1 && isBackground[p+w]) neighborsBg++;
-            if (neighborsBg > 0) {
-               const d = getDist(idx);
-               if (d < tolerance * 1.5) {
-                  const mix = (d - (tolerance * 0.8)) / (tolerance * 0.7);
-                  data[idx + 3] = Math.max(0, Math.min(255, mix * 255));
-               }
-            }
-          }
-        }
-      }
-      ctx.putImageData(imageData, 0, 0); resolve(canvas.toDataURL('image/png'));
-    };
-    img.onerror = reject; img.src = srcDataUrl;
+  return removeBackgroundNeo(srcDataUrl, {
+    keyColor: keyColor || "#FFFFFF",
+    tolBg: tolerance,
+    tolEdge: tolerance + 15,
+    softRadius: 3,
+    decontamStrength: 85,
+    preserveTrueMagenta: false,
+    fxMode: false,
+    removeHoles: removeHoles,
+    healingPower: healing,
+    steamSafe: true,
+    neutralizeStrength: 85,
+    alphaBias: 10
   });
 };
 

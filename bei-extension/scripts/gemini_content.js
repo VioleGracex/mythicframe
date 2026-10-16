@@ -52,12 +52,43 @@
     } catch (e) {}
   }
 
+  function extractAccountTierAndCapabilities() {
+    try {
+      const advBadge = document.querySelector('.bard-advanced-logo, [aria-label*="Gemini Advanced" i], [data-test-id*="advanced"], a[href*="advanced"]');
+      const headerText = (document.querySelector('header, .header, nav, [role="banner"]')?.innerText || '').toLowerCase();
+      const isAdvanced = !!advBadge || headerText.includes('gemini advanced') || headerText.includes('advanced');
+      const upgradeBtn = document.querySelector('a[href*="advanced"][aria-label*="upgrade" i], button[aria-label*="upgrade" i], [data-test-id*="upgrade"], a[href*="subscriptions"]');
+      const hasUpgrade = !!upgradeBtn;
+      const tier = isAdvanced ? 'advanced' : 'free';
+      return {
+        tier,
+        capabilities: {
+          image: true,
+          video: isAdvanced,
+          music: true,
+          text: true
+        }
+      };
+    } catch (e) {
+      return { tier: 'free', capabilities: { image: true, video: false, music: true, text: true } };
+    }
+  }
+
+  window.__MYTHIC_BEI_GET_TIER__ = extractAccountTierAndCapabilities;
+
   const COMPOSER_SELECTORS = [
     "rich-textarea div[contenteditable='true']",
     "div[contenteditable='true'][role='textbox']",
+    "[role='textbox'][contenteditable='true']",
     "rich-textarea p",
     "div[contenteditable='true']",
+    ".ql-editor[contenteditable='true']",
+    "[data-placeholder][contenteditable='true']",
+    ".input-area div[contenteditable='true']",
     "textarea[aria-label*='prompt' i]",
+    "textarea[placeholder*='prompt' i]",
+    "textarea[aria-label*='ask' i]",
+    "textarea[placeholder*='ask' i]",
     "textarea"
   ];
 
@@ -68,12 +99,36 @@
     "button[aria-label*='Envoyer' i]",
     "button[aria-label*='Enviar' i]",
     "button[aria-label*='Senden' i]",
+    "button[data-tooltip*='Send' i]",
+    "button[title*='Send' i]",
     "button.send-button",
     "[data-test-id='send-button']",
+    "[data-testid='send-button']",
     "button.mat-mdc-icon-button[aria-label*='Send' i]",
     "button.mat-mdc-icon-button[aria-label*='إرسال' i]",
     ".input-area button[aria-label*='Send' i]",
-    ".input-area button[aria-label*='إرسال' i]"
+    ".input-area button[aria-label*='إرسال' i]",
+    "button:has(mat-icon[data-mat-icon-name='send'])",
+    "button:has(svg.send-icon)",
+    ".send-button-container button"
+  ];
+
+  const UPLOAD_BUTTON_SELECTORS = [
+    "button[aria-label*='Add files' i]",
+    "button[aria-label*='Add image' i]",
+    "button[aria-label*='Upload image' i]",
+    "button[aria-label*='Upload files' i]",
+    "button[aria-label*='Upload file' i]",
+    "button[aria-label*='Upload' i]",
+    "button[aria-label*='Attach' i]",
+    "button[aria-label*='إرفاق' i]",
+    "button[aria-label*='إضافة' i]",
+    "button.uploader-button",
+    "[data-test-id*='upload-button']",
+    "[data-test-id*='add-file']",
+    "[data-testid*='upload-button']",
+    "button[mattooltip*='Upload' i]",
+    "button[mattooltip*='Add files' i]"
   ];
 
   const GEMINI_REFUSAL_PATTERNS = [
@@ -126,6 +181,19 @@
     /response was stopped/i,
     /stopped generating/i,
     /stopped response/i
+  ];
+
+  const GEMINI_TIER_RESTRICTION_PATTERNS = [
+    /video generation is only available with gemini advanced/i,
+    /video generation requires gemini advanced/i,
+    /only available with gemini advanced/i,
+    /upgrade to gemini advanced to generate videos/i,
+    /upgrade to gemini advanced to create videos/i,
+    /upgrade to gemini advanced/i,
+    /video generation limit reached/i,
+    /reached your video generation limit/i,
+    /video limit reached/i,
+    /not supported for your account/i
   ];
 
   const STOP_BUTTON_SELECTORS = [
@@ -1468,6 +1536,22 @@
     const existingUrls = new Set();
     protocol.extractImageUrlsFromNode(document.body).forEach(u => existingUrls.add(u));
 
+    const existingVideos = new Set();
+    Array.from(document.querySelectorAll('video')).forEach(v => {
+      if (v.src) existingVideos.add(v.src);
+      if (v.currentSrc) existingVideos.add(v.currentSrc);
+      const srcEl = v.querySelector('source');
+      if (srcEl && srcEl.src) existingVideos.add(srcEl.src);
+    });
+
+    const existingAudios = new Set();
+    Array.from(document.querySelectorAll('audio')).forEach(a => {
+      if (a.src) existingAudios.add(a.src);
+      if (a.currentSrc) existingAudios.add(a.currentSrc);
+      const srcEl = a.querySelector('source');
+      if (srcEl && srcEl.src) existingAudios.add(srcEl.src);
+    });
+
     const existingResponses = new Set(
       document.querySelectorAll('model-response, message-content, div.response-container, [data-test-id*="response"]')
     );
@@ -1636,6 +1720,94 @@
       }
     };
 
+    const deliverVideo = async (vidOrUrl) => {
+      if (imageDelivered || jobCancelled) return;
+      imageDelivered = true;
+      activeRunningJobId = null;
+      activeCancelHandler = null;
+      clearInterval(checkInterval);
+      if (keepAlivePort) keepAlivePort.disconnect();
+
+      reportProgress(jobId, 'capturing_video', 'Generated video detected! Extracting stream...');
+      let finalUrl = (typeof vidOrUrl === 'string') ? vidOrUrl : (vidOrUrl.currentSrc || vidOrUrl.src || vidOrUrl.querySelector?.('source')?.src || '');
+
+      if (finalUrl.startsWith('blob:')) {
+        try {
+          const resp = await fetch(finalUrl);
+          const blob = await resp.blob();
+          const reader = new FileReader();
+          finalUrl = await new Promise((res) => {
+            reader.onloadend = () => res(reader.result);
+            reader.onerror = () => res(finalUrl);
+            reader.readAsDataURL(blob);
+          });
+        } catch (e) {}
+      }
+
+      console.log(`[MythicFrame BEI] Captured Gemini video for job ${jobId}`);
+      try {
+        chrome.runtime.sendMessage({
+          type: 'GENERATION_COMPLETED',
+          data: {
+            jobId,
+            mediaType: 'video',
+            video: finalUrl,
+            image: finalUrl,
+            target: 'gemini',
+            metadata: {
+              mediaType: 'video',
+              srcUrl: finalUrl,
+              chatUrl: window.location.href
+            }
+          }
+        });
+      } catch (err) {}
+    };
+
+    const deliverAudio = async (audOrUrl) => {
+      if (imageDelivered || jobCancelled) return;
+      imageDelivered = true;
+      activeRunningJobId = null;
+      activeCancelHandler = null;
+      clearInterval(checkInterval);
+      if (keepAlivePort) keepAlivePort.disconnect();
+
+      reportProgress(jobId, 'capturing_audio', 'Generated audio detected! Extracting audio track...');
+      let finalUrl = (typeof audOrUrl === 'string') ? audOrUrl : (audOrUrl.currentSrc || audOrUrl.src || audOrUrl.querySelector?.('source')?.src || '');
+
+      if (finalUrl.startsWith('blob:')) {
+        try {
+          const resp = await fetch(finalUrl);
+          const blob = await resp.blob();
+          const reader = new FileReader();
+          finalUrl = await new Promise((res) => {
+            reader.onloadend = () => res(reader.result);
+            reader.onerror = () => res(finalUrl);
+            reader.readAsDataURL(blob);
+          });
+        } catch (e) {}
+      }
+
+      console.log(`[MythicFrame BEI] Captured Gemini audio for job ${jobId}`);
+      try {
+        chrome.runtime.sendMessage({
+          type: 'GENERATION_COMPLETED',
+          data: {
+            jobId,
+            mediaType: 'audio',
+            audio: finalUrl,
+            image: finalUrl,
+            target: 'gemini',
+            metadata: {
+              mediaType: 'audio',
+              srcUrl: finalUrl,
+              chatUrl: window.location.href
+            }
+          }
+        });
+      } catch (err) {}
+    };
+
     function isUserAttachedImage(img) {
       if (!img) return false;
       // STRICT FILTER: NEVER grab images inside user query, prompt bubble, attachment containers, or composer
@@ -1764,7 +1936,27 @@
             }
           }
 
-          // If no image is rendered yet and Gemini is actively generating, wait for next tick
+          // 1C: Check for generated video in latest response
+          const vidsInLatest = Array.from(latestResponse.querySelectorAll('video, [data-test-id*="video"] video')).filter(v => !v.closest('user-query, .user-query, .input-area'));
+          for (const vid of vidsInLatest) {
+            const vSrc = vid.currentSrc || vid.src || vid.querySelector('source')?.src;
+            if (vSrc && !existingVideos.has(vSrc)) {
+              await deliverVideo(vid);
+              return;
+            }
+          }
+
+          // 1D: Check for generated audio in latest response
+          const audsInLatest = Array.from(latestResponse.querySelectorAll('audio, [data-test-id*="audio"] audio')).filter(a => !a.closest('user-query, .user-query, .input-area'));
+          for (const aud of audsInLatest) {
+            const aSrc = aud.currentSrc || aud.src || aud.querySelector('source')?.src;
+            if (aSrc && !existingAudios.has(aSrc)) {
+              await deliverAudio(aud);
+              return;
+            }
+          }
+
+          // If no media is rendered yet and Gemini is actively generating, wait for next tick
           if (isModelResponseGenerating(latestResponse)) {
             return;
           }
@@ -1823,7 +2015,28 @@
               }
             }
 
-            // B. Quota / Rate Limit Detection
+            // B. Subscription Tier Restriction Detection (e.g. Veo Video restricted to Gemini Advanced)
+            for (const pat of GEMINI_TIER_RESTRICTION_PATTERNS) {
+              if (pat.test(respText)) {
+                activeRunningJobId = null;
+                activeCancelHandler = null;
+                clearInterval(checkInterval);
+                if (keepAlivePort) keepAlivePort.disconnect();
+                clickStopButton();
+                clearComposer();
+                const tierMsg = `TIER_RESTRICTION: ${respText.substring(0, 180)}. Video generation requires a Gemini Advanced account slot.`;
+                console.warn(`[MythicFrame BEI] ${tierMsg}`);
+                try {
+                  chrome.runtime.sendMessage({
+                    type: 'GENERATION_FAILED',
+                    data: { jobId, error: tierMsg, isTierRestricted: true }
+                  });
+                } catch (e) {}
+                return;
+              }
+            }
+
+            // C. Quota / Rate Limit Detection
             for (const pat of GEMINI_RATE_LIMIT_PATTERNS) {
               if (pat.test(respText)) {
                 activeRunningJobId = null;
@@ -2125,6 +2338,32 @@
         url: window.location.href,
         title: document.title,
         composerReady: Boolean(getComposerElement())
+      });
+      return true;
+    }
+
+    if (request.action === 'CHECK_SELECTOR_HEALTH') {
+      const composerMatch = COMPOSER_SELECTORS.find(s => {
+        try { return Boolean(document.querySelector(s)); } catch (e) { return false; }
+      });
+      const sendMatch = SEND_BUTTON_SELECTORS.find(s => {
+        try { return Boolean(document.querySelector(s)); } catch (e) { return false; }
+      });
+      const uploadMatch = UPLOAD_BUTTON_SELECTORS.find(s => {
+        try { return Boolean(document.querySelector(s)); } catch (e) { return false; }
+      }) || (document.querySelector("input[type='file']") ? "input[type='file']" : null);
+
+      const hasImages = protocol.getAllImagesRecursively ? protocol.getAllImagesRecursively(document.body).some(img => protocol.isGeneratedImage(img)) : false;
+
+      sendResponse({
+        success: true,
+        target: 'gemini',
+        selectors: {
+          composer: { ok: Boolean(composerMatch), selector: composerMatch || 'NOT FOUND' },
+          sendButton: { ok: Boolean(sendMatch), selector: sendMatch || 'NOT FOUND' },
+          uploadTrigger: { ok: Boolean(uploadMatch), selector: uploadMatch || 'NOT FOUND' },
+          imageOutput: { ok: hasImages, count: hasImages ? 1 : 0 }
+        }
       });
       return true;
     }

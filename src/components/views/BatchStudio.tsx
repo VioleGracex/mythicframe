@@ -1104,6 +1104,18 @@ export const BatchStudio: React.FC<BatchStudioProps> = ({ engine }) => {
                 </div>
               </div>
 
+            {isGenerating && (
+              <button
+                onClick={engine.isBatchPaused ? engine.handleResumeBatch : engine.handlePauseBatch}
+                className={`px-4 py-2 rounded-lg font-black text-sm flex items-center gap-2 transition-all shadow-lg uppercase italic tracking-wider text-white ${
+                  engine.isBatchPaused ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-900/20 animate-pulse' : 'bg-slate-700 hover:bg-slate-600 shadow-slate-900/20'
+                }`}
+                title={engine.isBatchPaused ? "Resume batch queue" : "Pause batch queue after active item finishes"}
+              >
+                <i className={`fa-solid ${engine.isBatchPaused ? 'fa-play' : 'fa-pause'}`} />
+                {engine.isBatchPaused ? 'Resume Queue' : 'Pause Queue'}
+              </button>
+            )}
             <button 
               onClick={isGenerating ? engine.handleCancel : engine.handleGenerateBatch}
               disabled={!isGenerating && queue.filter((i: BatchItem) => i.status === 'pending' && i.enabled).length === 0}
@@ -1114,7 +1126,7 @@ export const BatchStudio: React.FC<BatchStudioProps> = ({ engine }) => {
               }`}
             >
               <i className={`fa-solid ${isGenerating ? 'fa-stop' : 'fa-wand-magic-sparkles'}`} />
-              {isGenerating ? 'Cancel Generation' : 'Generate Selected'}
+              {isGenerating ? 'Cancel Generation' : (engine.isBatchPaused ? 'Resume Batch' : 'Generate Selected')}
             </button>
             <button 
               onClick={handleDownloadAll}
