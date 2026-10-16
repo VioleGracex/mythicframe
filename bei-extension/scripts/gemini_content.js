@@ -1194,17 +1194,43 @@
           return !t.includes('create image') && !t.includes('canvas') && !t.includes('deep research');
         });
 
-        const hasSpinner = imageChips.some(c => c.querySelector('mat-progress-spinner, mat-spinner, [class*="spin"], [class*="loading"], [role="progressbar"]'));
+        // Only detect genuine, visible progress indicators (exclude hidden skeleton placeholders)
+        const hasSpinner = imageChips.some(c => {
+          const spinner = c.querySelector('mat-progress-spinner, mat-spinner, [role="progressbar"], .uploading-spinner, .upload-progress');
+          if (!spinner) return false;
+          try {
+            const style = window.getComputedStyle(spinner);
+            return spinner.offsetParent !== null && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+          } catch (e) {
+            return false;
+          }
+        });
+
         const hasError = imageChips.some(c => {
           const t = (c.textContent || '').toLowerCase();
-          return t.includes('upload failed') || t.includes('error') || c.querySelector('mat-icon[fonticon="error"], mat-icon[fonticon="warning"]');
+          const hasErrorIcon = c.querySelector('mat-icon[fonticon="error"], mat-icon[fonticon="warning"], [aria-label*="error" i], [aria-label*="failed" i]');
+          return (t.includes('upload failed') || t.includes('could not upload') || hasErrorIcon) && (c.offsetParent !== null);
         });
 
         if (hasSpinner) {
-          console.log('[MythicFrame BEI Verification] Image upload still in progress. Waiting...');
-          await new Promise(r => setTimeout(r, 800));
-          continue;
+          console.log(`[MythicFrame BEI Verification] Image upload spinner active (attempt ${attempt + 1}). Waiting...`);
+          await new Promise(r => setTimeout(r, 1000));
+          if (attempt === 2) {
+            // Check if thumbnail preview is already rendered inside chip
+            const hasRenderedThumb = imageChips.some(c => {
+              const img = c.querySelector('img, [style*="background-image"]');
+              return img && (img.naturalWidth > 0 || (img.getAttribute('src') || '').length > 20);
+            });
+            if (hasRenderedThumb) {
+              console.log('[MythicFrame BEI Verification] Reference thumbnail is rendered and ready. Bypassing residual spinner overlay.');
+            } else {
+              return { ok: false, reason: 'Reference image upload still in progress in Gemini Web after timeout.' };
+            }
+          } else {
+            continue;
+          }
         }
+
         if (hasError) {
           return { ok: false, reason: 'Gemini reference upload failed or was rejected by Google server.' };
         }
