@@ -1520,13 +1520,13 @@ async function generateWithBEI(options) {
   if (!result || !result.image) {
     if (target === "gemini") {
       try {
-        console.log(`[MythicFrame BEI] Querying Google Gemini Library (Slot ${accountSlot}) for recent generation fallback...`);
+        console.error(`[MythicFrame BEI] Querying Google Gemini Library (Slot ${accountSlot}) for recent generation fallback...`);
         const libRes = await fetchBEILibraryAssets("gemini", accountSlot, 6);
         if (libRes.success && Array.isArray(libRes.assets) && libRes.assets.length > 0) {
           const latestAsset = libRes.assets[0];
           const assetUrl = latestAsset.highResUrl || latestAsset.src;
           if (assetUrl) {
-            console.log(`[MythicFrame BEI] Automatically recovered image from Google Gemini Library: ${assetUrl}`);
+            console.error(`[MythicFrame BEI] Automatically recovered image from Google Gemini Library: ${assetUrl}`);
             const saved = await saveLibraryAssetToFile(assetUrl, "bei_library_failover");
             if (saved) {
               return {
@@ -2643,7 +2643,7 @@ Connected Browser Tabs (${settings.tabs?.length || 0}):
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Mythic Advanced MCP server running on stdio");
+  // Keep stdio completely silent for strict MCP JSON-RPC clients
 }
 run().catch((error) => {
   console.error(error);
