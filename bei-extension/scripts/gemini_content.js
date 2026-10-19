@@ -1946,8 +1946,10 @@
             if (!src || existingImages.has(src)) continue;
 
             if (protocol.isGeneratedImage(img)) {
-              if (img.complete && (img.naturalWidth > 120 || img.naturalHeight > 120)) {
-                await deliverImage(img, img.naturalWidth, img.naturalHeight);
+              const hasDimension = (img.naturalWidth > 120 || img.naturalHeight > 120);
+              const isDirectCdnOrBlob = src && (src.includes('googleusercontent.com') || src.startsWith('blob:') || src.startsWith('data:image/'));
+              if (hasDimension || isDirectCdnOrBlob || img.complete) {
+                await deliverImage(img, img.naturalWidth || 1024, img.naturalHeight || 1024);
                 return;
               }
             }
@@ -1998,8 +2000,10 @@
             if (!src || existingImages.has(src)) continue;
 
             if (protocol.isGeneratedImage(img)) {
-              if (img.complete && (img.naturalWidth > 120 || img.naturalHeight > 120)) {
-                await deliverImage(img, img.naturalWidth, img.naturalHeight);
+              const hasDimension = (img.naturalWidth > 120 || img.naturalHeight > 120);
+              const isDirectCdnOrBlob = src && (src.includes('googleusercontent.com') || src.startsWith('blob:') || src.startsWith('data:image/'));
+              if (hasDimension || isDirectCdnOrBlob || img.complete) {
+                await deliverImage(img, img.naturalWidth || 1024, img.naturalHeight || 1024);
                 return;
               }
             }
@@ -2014,8 +2018,10 @@
           if (!src || existingImages.has(src)) continue;
 
           if (protocol.isGeneratedImage(img)) {
-            if (img.complete && (img.naturalWidth > 120 || img.naturalHeight > 120)) {
-              await deliverImage(img, img.naturalWidth, img.naturalHeight);
+            const hasDimension = (img.naturalWidth > 120 || img.naturalHeight > 120);
+            const isDirectCdnOrBlob = src && (src.includes('googleusercontent.com') || src.startsWith('blob:') || src.startsWith('data:image/'));
+            if (hasDimension || isDirectCdnOrBlob || img.complete) {
+              await deliverImage(img, img.naturalWidth || 1024, img.naturalHeight || 1024);
               return;
             }
           }
@@ -2453,6 +2459,53 @@
             if (assets.length >= (request.data?.limit || 20)) break;
           }
           sendResponse({ success: true, assets, count: assets.length });
+        } catch (err) {
+          sendResponse({ success: false, error: err.message });
+        }
+      })();
+      return true;
+    }
+
+    if (request.action === 'VERIFY_AND_HARVEST_IMAGE') {
+      (async () => {
+        try {
+          ensureBackgroundCpuAwake();
+          const stopBtn = document.querySelector("button[aria-label*='Stop' i], button[aria-label*='إيقاف' i], button[data-tooltip*='Stop' i]");
+          const hasProgressBar = Boolean(document.querySelector('.loading, .shimmer, mat-progress-bar, mat-progress-spinner, [role="progressbar"]'));
+          const isGenerating = Boolean(stopBtn || hasProgressBar);
+
+          // Find generated images in latest turns or overall document
+          const imgs = protocol.getAllImagesRecursively ? protocol.getAllImagesRecursively(document.body) : Array.from(document.querySelectorAll('img'));
+          const candidates = [];
+          for (let i = imgs.length - 1; i >= 0; i--) {
+            const img = imgs[i];
+            const src = img.src || img.getAttribute('data-src') || '';
+            if (!src) continue;
+            if (src.includes('/a/') || src.includes('=s32') || src.includes('=s64') || src.includes('=s96')) continue;
+            if (protocol.isGeneratedImage && protocol.isGeneratedImage(img)) {
+              const highResUrl = protocol.getHighResImageUrl ? protocol.getHighResImageUrl(src) : src;
+              const base64 = protocol.imageToBase64 ? await protocol.imageToBase64(img).catch(() => null) : null;
+              candidates.push({
+                src,
+                highResUrl,
+                base64: base64 || src,
+                alt: img.alt || img.getAttribute('aria-label') || '',
+                width: img.naturalWidth || 1024,
+                height: img.naturalHeight || 1024
+              });
+              break; // Take the latest generated image
+            }
+          }
+
+          sendResponse({
+            success: true,
+            isGenerating,
+            hasImage: candidates.length > 0,
+            image: candidates[0] || null,
+            target: 'gemini',
+            url: window.location.href,
+            title: document.title
+          });
         } catch (err) {
           sendResponse({ success: false, error: err.message });
         }

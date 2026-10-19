@@ -322,6 +322,28 @@ export async function setActiveBEITab(target: 'gemini' | 'chatgpt' = 'gemini', a
 }
 
 /**
+ * Switches to and activates the Gemini or ChatGPT tab, brings window to foreground,
+ * checks generation status, and harvests any completed image from the DOM.
+ */
+export async function switchAndVerifyBEITab(target: 'gemini' | 'chatgpt' = 'gemini', accountSlot: number = 0, tabId?: number, bringTabToFront = false): Promise<{ success: boolean; message: string; data?: any }> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/switch-and-verify-tab`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, accountSlot, tabId, bringTabToFront })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      return { success: false, message: `Failed to verify tab: ${errText}` };
+    }
+    const data: any = await res.json();
+    return { success: true, message: `Tab verified successfully`, data };
+  } catch (err: any) {
+    return { success: false, message: `Could not reach BEI Bridge: ${err.message}` };
+  }
+}
+
+/**
  * Fetches assets from Google Gemini Web Library (/library).
  */
 export async function fetchBEILibraryAssets(target: 'gemini' = 'gemini', accountSlot: number = 0, limit: number = 5): Promise<{ success: boolean; assets?: any[]; message?: string }> {
@@ -422,7 +444,7 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     accountSlot = 0,
     images = [],
     timeoutSeconds = 900,
-    tabMode = 'new_window_group',
+    tabMode = 'same_window_group',
     bringTabToFront = false,
     quality = 'ultra_original',
     dispatchMode = 'single',
@@ -478,12 +500,40 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     }
   } catch (err: any) {
     chatError = err;
-    console.warn(`[MythicFrame BEI] Chat generation did not catch image: ${err.message}. Initiating Automated Library Failover Protocol...`);
+    console.warn(`[MythicFrame BEI] Chat generation did not catch image: ${err.message}. Initiating Automated Tab Harvest & Failover Protocol...`);
+  }
+
+  // --- AUTOMATED TAB VERIFY & HARVEST PROTOCOL ---
+  // If BEI chat generation timed out or failed to catch image in DOM:
+  // 1. Force-activate the tab, focus window to wake up throttled DOM timers, and query DOM for finished image!
+  if (!result || !result.image) {
+    try {
+      console.log(`[MythicFrame BEI] Attempting active tab verification & DOM harvest on ${target} slot ${accountSlot}...`);
+      const verifyRes = await switchAndVerifyBEITab(target, accountSlot);
+      if (verifyRes.success && verifyRes.data?.hasImage && verifyRes.data?.image) {
+        const harvested = verifyRes.data.image;
+        const imgPayload = harvested.base64 || harvested.highResUrl || harvested.src;
+        if (imgPayload) {
+          console.log(`[MythicFrame BEI] Successfully harvested rendered image from active tab!`);
+          result = {
+            success: true,
+            image: imgPayload,
+            jobId: `harvested_${Date.now()}`,
+            metadata: {
+              recoveredViaTabVerify: true,
+              alt: harvested.alt || '',
+              url: verifyRes.data.url
+            }
+          };
+        }
+      }
+    } catch (verifyErr: any) {
+      console.warn(`[MythicFrame BEI] Tab verify & harvest notice: ${verifyErr.message}`);
+    }
   }
 
   // --- AUTOMATED LIBRARY FAILOVER PROTOCOL ---
-  // If BEI chat generation timed out or failed to catch image in DOM,
-  // query the Gemini Library (/library) to see if the generated asset exists there!
+  // If active tab verification was empty, query Google Gemini Library (/library) as secondary recovery
   if (!result || !result.image) {
     if (target === 'gemini') {
       try {

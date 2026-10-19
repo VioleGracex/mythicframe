@@ -153,6 +153,7 @@ export class BEIBridgeServer {
   }
   private pendingJobs = new Map<string, PendingJob>();
   private pendingActiveTabRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
+  private pendingVerifyTabRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private pendingLibraryRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private lastHeartbeat = Date.now();
   private extensionVersion = '1.5.3';
@@ -440,6 +441,11 @@ export class BEIBridgeServer {
 
         if (req.method === 'POST' && url.pathname === '/api/bei/set-active-tab') {
           this.handleSetActiveTabRequest(req, res);
+          return;
+        }
+
+        if (req.method === 'POST' && (url.pathname === '/api/bei/switch-and-verify-tab' || url.pathname === '/api/bei/verify-tab')) {
+          this.handleSwitchAndVerifyTabRequest(req, res);
           return;
         }
 
@@ -954,6 +960,23 @@ export class BEIBridgeServer {
       return;
     }
 
+    if (type === 'TAB_VERIFIED') {
+      const reqId = data?.reqId;
+      if (reqId && this.pendingVerifyTabRequests.has(reqId)) {
+        const req = this.pendingVerifyTabRequests.get(reqId)!;
+        clearTimeout(req.timer);
+        this.pendingVerifyTabRequests.delete(reqId);
+        req.resolve(data);
+      } else {
+        for (const [id, req] of this.pendingVerifyTabRequests.entries()) {
+          clearTimeout(req.timer);
+          this.pendingVerifyTabRequests.delete(id);
+          req.resolve(data);
+        }
+      }
+      return;
+    }
+
     if (type === 'LIBRARY_ASSETS_FETCHED') {
       for (const [id, req] of this.pendingLibraryRequests.entries()) {
         clearTimeout(req.timer);
@@ -1342,6 +1365,48 @@ export class BEIBridgeServer {
     } catch (err: any) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'SET_ACTIVE_TAB_FAILED', message: err.message }));
+    }
+  }
+
+  public async handleSwitchAndVerifyTabRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    try {
+      const payload = await this.parseRequestBody(req).catch(() => ({}));
+      const { target = 'gemini', accountSlot = 0, tabId, preferredBrowser, browser } = payload || {};
+
+      if (!this.isConnected()) {
+        await this.ensureBrowserRunning();
+      }
+
+      if (!this.isConnected()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'EXTENSION_NOT_CONNECTED', message: 'BEI Chrome Extension is not connected.' }));
+        return;
+      }
+
+      const reqId = `verify_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const targetSocket = this.getClientSocket(preferredBrowser || browser) || this.extensionSocket;
+
+      const promise = new Promise<any>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (this.pendingVerifyTabRequests.has(reqId)) {
+            this.pendingVerifyTabRequests.delete(reqId);
+            reject(new Error('Timed out waiting for tab verification and harvest in browser'));
+          }
+        }, 15000);
+        this.pendingVerifyTabRequests.set(reqId, { resolve, reject, timer });
+      });
+
+      targetSocket?.send(JSON.stringify({
+        type: 'SWITCH_AND_VERIFY_TAB',
+        data: { target, accountSlot, tabId, reqId }
+      }));
+
+      const result = await promise;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'VERIFY_TAB_FAILED', message: err.message }));
     }
   }
 

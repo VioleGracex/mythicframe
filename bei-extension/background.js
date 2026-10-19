@@ -672,10 +672,12 @@ async function organizeTabIntoBEIGroup(tabId, tabMode = 'new_window_group', brin
         if (currentGroup && currentGroup.title === "MythicFrame BEI") {
           beiDedicatedWindowId = tab.windowId;
           if (bringTabToFront) {
-            await chrome.tabs.update(tab.id, { active: true });
-            if (tab.windowId) {
-              await chrome.windows.update(tab.windowId, { focused: true });
-            }
+            try {
+              await chrome.tabs.update(tab.id, { active: true });
+              if (tab.windowId) {
+                await chrome.windows.update(tab.windowId, { focused: true });
+              }
+            } catch (e) {}
           }
           return;
         }
@@ -951,12 +953,25 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       console.log(`[MythicFrame BEI Worker] Opening single tab for Gemini slot ${targetSlot} (Mode: ${tabMode}, Focus: ${bringTabToFront})...`);
       const newTabProps = {
         url: `https://gemini.google.com/u/${targetSlot}/app`,
-        active: true
+        active: Boolean(bringTabToFront)
       };
       if (primaryBeiWindowId) {
         newTabProps.windowId = primaryBeiWindowId;
+      } else if (allTabs.length > 0 && allTabs[0].windowId) {
+        newTabProps.windowId = allTabs[0].windowId;
       }
-      const newTab = await chrome.tabs.create(newTabProps);
+      let newTab;
+      try {
+        newTab = await chrome.tabs.create(newTabProps);
+      } catch (tabErr) {
+        console.warn(`[MythicFrame BEI Worker] tabs.create fallback: ${tabErr.message}`);
+        const newWin = await chrome.windows.create({
+          url: newTabProps.url,
+          focused: Boolean(bringTabToFront)
+        });
+        primaryBeiWindowId = newWin.id;
+        newTab = newWin.tabs && newWin.tabs[0] ? newWin.tabs[0] : (await chrome.tabs.query({ windowId: newWin.id }))[0];
+      }
       // Organize into BEI group IMMEDIATELY upon creation
       await organizeTabIntoBEIGroup(newTab.id, tabMode, bringTabToFront);
       await waitForTabReady(newTab.id, 15000);
@@ -1189,10 +1204,16 @@ async function startJob(jobData) {
   activeJobs.set(jobId, { tabId, target, prompt, fullPrompt, accountSlot: parsedSlot, aspectRatio, modelQuality, submitted: false });
   persistSessionJobs();
 
-  // Anti-throttling: ensure tab is active in its window during execution so Chromium doesn't throttle DOM timers
-  try {
-    await chrome.tabs.update(tabId, { active: true });
-  } catch (e) {}
+  // Ghost Mode: Never steal OS window focus or hijack the user's active browsing tab
+  if (bringTabToFront) {
+    try {
+      await chrome.tabs.update(tabId, { active: true });
+      const tabInfo = await chrome.tabs.get(tabId);
+      if (tabInfo && tabInfo.windowId) {
+        try { await chrome.windows.update(tabInfo.windowId, { focused: true }); } catch (e) {}
+      }
+    } catch (e) {}
+  }
 
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
@@ -1248,15 +1269,17 @@ async function handleBridgeCommand(msg) {
   }
 
   if (type === "SET_ACTIVE_TAB") {
-    const { target = "gemini", accountSlot = 0 } = data || {};
+    const { target = "gemini", accountSlot = 0, bringTabToFront = false } = data || {};
     const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
     try {
-      const tabId = await findOrCreateTab(target, parsedSlot, 'same_window_group', true, 'same_chat');
+      const tabId = await findOrCreateTab(target, parsedSlot, 'same_window_group', Boolean(bringTabToFront), 'same_chat');
       if (tabId) {
-        await chrome.tabs.update(tabId, { active: true });
-        const tab = await chrome.tabs.get(tabId);
-        if (tab && tab.windowId) {
-          try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
+        if (bringTabToFront) {
+          await chrome.tabs.update(tabId, { active: true });
+          const tab = await chrome.tabs.get(tabId);
+          if (tab && tab.windowId) {
+            try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
+          }
         }
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
@@ -1270,6 +1293,76 @@ async function handleBridgeCommand(msg) {
         ws.send(JSON.stringify({
           type: "ACTIVE_TAB_SET",
           data: { success: false, error: err.message }
+        }));
+      }
+    }
+    return;
+  }
+
+  if (type === "SWITCH_AND_VERIFY_TAB") {
+    const { target = "gemini", accountSlot = 0, tabId: requestedTabId, reqId, bringTabToFront = false } = data || {};
+    const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
+    try {
+      let tabId = requestedTabId;
+      if (!tabId) {
+        tabId = await findOrCreateTab(target, parsedSlot, 'same_window_group', Boolean(bringTabToFront), 'same_chat');
+      }
+      if (!tabId) throw new Error(`Could not find or open tab for ${target} slot ${parsedSlot}`);
+
+      // Silent Mode: only activate tab / window if explicitly requested
+      if (bringTabToFront) {
+        await chrome.tabs.update(tabId, { active: true });
+        const tab = await chrome.tabs.get(tabId);
+        if (tab && tab.windowId) {
+          try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
+        }
+      }
+
+      await ensureContentScriptInjected(tabId, target);
+      await new Promise(r => setTimeout(r, 300));
+
+      // 2. Query tab state & harvest any finished image
+      chrome.tabs.sendMessage(tabId, { action: "VERIFY_AND_HARVEST_IMAGE" }, (res) => {
+        const lastErr = chrome.runtime.lastError;
+        if (lastErr || !res) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "TAB_VERIFIED",
+              data: {
+                reqId,
+                success: false,
+                tabId,
+                target,
+                accountSlot: parsedSlot,
+                error: (lastErr && lastErr.message) || 'No response from content script'
+              }
+            }));
+          }
+        } else {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "TAB_VERIFIED",
+              data: {
+                reqId,
+                success: true,
+                tabId,
+                target,
+                accountSlot: parsedSlot,
+                isGenerating: Boolean(res.isGenerating),
+                hasImage: Boolean(res.hasImage),
+                image: res.image || null,
+                url: res.url,
+                title: res.title
+              }
+            }));
+          }
+        }
+      });
+    } catch (err) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "TAB_VERIFIED",
+          data: { reqId, success: false, error: err.message }
         }));
       }
     }
@@ -1345,11 +1438,11 @@ async function handleBridgeCommand(msg) {
   }
 
   if (type === "EXECUTE_PROMPT") {
-    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot = 0, timeoutSeconds, images = [], tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single' } = data;
+    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot = 0, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single' } = data;
     let parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
 
-    // Multi-Account Mode: If requested slot is busy and multi mode is enabled, find an idle slot
-    if (dispatchMode === 'multi' && isSlotBusy(target, parsedSlot)) {
+    // Multi-Account Mode: Only auto-route to an idle slot if explicitly enabled with multi mode and no specific slot was requested
+    if (dispatchMode === 'multi' && data.accountSlot === undefined && isSlotBusy(target, parsedSlot)) {
       console.log(`[MythicFrame BEI Worker] Multi-Account Mode: Slot ${target}:${parsedSlot} is busy. Finding idle account slot...`);
       const candidateSlots = [0, 1, 2, 3];
       const idleSlot = candidateSlots.find(s => !isSlotBusy(target, s));

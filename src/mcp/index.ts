@@ -43,6 +43,7 @@ import {
   generateWithBEI,
   getMythicSettings,
   setActiveBEITab,
+  switchAndVerifyBEITab,
   fetchBEILibraryAssets,
   saveLibraryAssetToFile
 } from "./beiClient.js";
@@ -376,6 +377,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: "mythic_switch_and_verify_tab",
+        description: "Brings the Google Gemini or ChatGPT tab to the foreground, focuses its browser window to defeat background DOM throttling, checks live generation status, and harvests any completed image directly from the DOM.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            target: { type: "string", enum: ["gemini", "chatgpt"], description: "Browser target (default 'gemini')" },
+            accountSlot: { type: "number", description: "Account slot (default 0)" },
+            tabId: { type: "number", description: "Optional specific tab ID to activate and verify" },
+            bringTabToFront: { type: "boolean", description: "If true, explicitly brings window and tab to foreground. Default: false (Silent background ghost mode)." }
+          },
+          required: []
+        }
+      },
+      {
         name: "mythic_fetch_library_assets",
         description: "Fetches generated image assets from Google Gemini Web Library (/library). Supports keyword searching and auto-downloading assets to local disk. Useful when DOM chat extraction fails or to retrieve past generated images.",
         inputSchema: {
@@ -666,6 +681,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const slot = args.accountSlot ?? 0;
       const res = await setActiveBEITab(target, slot);
       return { content: [{ type: "text", text: res.message }] };
+    }
+    else if (name === "mythic_switch_and_verify_tab") {
+      const target = args.target || 'gemini';
+      const slot = args.accountSlot ?? 0;
+      const res = await switchAndVerifyBEITab(target, slot, args.tabId, Boolean(args.bringTabToFront));
+      if (!res.success) {
+        return { content: [{ type: "text", text: `Tab verification failed: ${res.message}` }], isError: true };
+      }
+      const data = res.data || {};
+      let imgSection = '';
+      if (data.hasImage && data.image) {
+        const harvested = data.image;
+        const imgPayload = harvested.base64 || harvested.highResUrl || harvested.src;
+        if (imgPayload) {
+          const saved = await saveLibraryAssetToFile(imgPayload, 'harvested_tab');
+          if (saved) {
+            const formattedPath = saved.filePath.replace(/\\/g, '/');
+            const fileName = path.basename(saved.filePath);
+            imgSection = `\n\nHARVESTED IMAGE SAVED TO DISK:\n- File: ${saved.filePath} (${saved.sizeMB})\n- Link: [${fileName}](file:///${formattedPath})\n`;
+          }
+        }
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `TAB SWITCHED & VERIFIED:\n- Target: ${data.target || target} (Slot ${slot})\n- Tab ID: ${data.tabId}\n- Title: ${data.title || 'N/A'}\n- URL: ${data.url || 'N/A'}\n- Is Generating: ${data.isGenerating ? 'YES (In Progress)' : 'NO'}\n- Has Rendered Image: ${data.hasImage ? 'YES' : 'NO'}${imgSection}`
+        }]
+      };
     }
     else if (name === "mythic_fetch_library_assets") {
       const target = args.target || 'gemini';
