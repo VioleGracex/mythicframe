@@ -57,6 +57,20 @@ export interface BEIGenerateResult {
   metadata?: any;
 }
 
+export interface BEITextOptions {
+  prompt: string;
+  images?: string[];
+  target?: 'gemini' | 'chatgpt';
+  accountSlot?: number;
+  timeoutSeconds?: number;
+}
+
+export interface BEITextResult {
+  success: boolean;
+  text: string;
+  jobId: string;
+}
+
 const BRIDGE_PORT = Number(process.env.BEI_PORT) || 58925;
 const WEB_PORT = Number(process.env.PORT) || 3488;
 
@@ -419,7 +433,7 @@ export async function getMythicSettings(): Promise<any> {
       bridgeRunning: Boolean(statusData),
       bridgePort: BRIDGE_PORT,
       webPort: WEB_PORT,
-      extensionVersion: statusData?.extensionVersion || '1.5.3',
+      extensionVersion: statusData?.extensionVersion || '1.5.5',
       connected: Boolean(statusData?.connected),
       accounts: statusData?.accounts || [],
       tabs: statusData?.tabs || [],
@@ -621,3 +635,61 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     metadata: result.metadata
   };
 }
+
+/**
+ * Sends a text prompt (and optional reference images for vision analysis)
+ * to an active Google Gemini or ChatGPT browser session via BEI with zero API key required.
+ */
+export async function queryBEIText(options: BEITextOptions): Promise<BEITextResult> {
+  const {
+    prompt,
+    images = [],
+    target = 'gemini',
+    accountSlot = 0,
+    timeoutSeconds = 120
+  } = options;
+
+  // Process reference images (convert local file paths to base64 data URIs)
+  const processedImages: string[] = [];
+  for (const img of images) {
+    if (img.startsWith('data:image/')) {
+      processedImages.push(img);
+    } else if (fs.existsSync(img)) {
+      const ext = path.extname(img).toLowerCase();
+      const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+      const b64 = fs.readFileSync(img).toString('base64');
+      processedImages.push(`data:${mime};base64,${b64}`);
+    }
+  }
+
+  const payload = {
+    prompt,
+    images: processedImages,
+    target,
+    accountSlot,
+    timeoutSeconds
+  };
+
+  const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/text`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorData: any = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(errorData.message || `BEI text query failed with status ${response.status}`);
+  }
+
+  const result: any = await response.json();
+  if (!result.success || typeof result.text !== 'string') {
+    throw new Error(result.error || result.message || 'BEI bridge did not return a valid text response.');
+  }
+
+  return {
+    success: true,
+    text: result.text,
+    jobId: result.jobId
+  };
+}
+

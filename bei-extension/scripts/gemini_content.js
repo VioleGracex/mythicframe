@@ -20,7 +20,7 @@
 
   console.log(`[MythicFrame BEI] Gemini content script attached to slot /u/${protocol.extractGeminiAccountSlot(window.location.href)}/`);
 
-  // ─── FAKE ACTIVE MODE ────────────────────────────────────────────────────────
+  // â”€â”€â”€ FAKE ACTIVE MODE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Prevents Chromium & Angular/Gemini from sleeping or throttling background tabs.
   // 1. Spoofs document.hidden, document.visibilityState to always report active.
   // 2. Plays an inaudible AudioContext oscillator buffer, which Chromium treats as
@@ -36,6 +36,10 @@
   let silentAudioCtx = null;
   function ensureBackgroundCpuAwake() {
     try {
+      // Chrome Autoplay Policy Guard: Never instantiate or resume AudioContext without user activation
+      if (typeof navigator !== 'undefined' && navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+        return;
+      }
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (AudioContextClass && (!silentAudioCtx || silentAudioCtx.state === 'closed')) {
         silentAudioCtx = new AudioContextClass();
@@ -44,13 +48,24 @@
         gain.gain.value = 0.00001; // Inaudible
         osc.connect(gain);
         gain.connect(silentAudioCtx.destination);
-        osc.start();
+        try {
+          osc.start();
+        } catch (e) {}
         if (silentAudioCtx.state === 'suspended') {
           silentAudioCtx.resume().catch(() => {});
         }
       }
     } catch (e) {}
   }
+
+  // Defer AudioContext background wake until user interaction to comply with Chrome Autoplay policy
+  try {
+    const onUserInteraction = () => {
+      ensureBackgroundCpuAwake();
+    };
+    window.addEventListener('click', onUserInteraction, { capture: true, passive: true, once: true });
+    window.addEventListener('keydown', onUserInteraction, { capture: true, passive: true, once: true });
+  } catch (e) {}
 
   function extractAccountTierAndCapabilities() {
     try {
@@ -95,7 +110,7 @@
   const SEND_BUTTON_SELECTORS = [
     "button[aria-label*='Send' i]",
     "button[aria-label*='Submit' i]",
-    "button[aria-label*='إرسال' i]",
+    "button[aria-label*='Ø¥Ø±Ø³Ø§Ù„' i]",
     "button[aria-label*='Envoyer' i]",
     "button[aria-label*='Enviar' i]",
     "button[aria-label*='Senden' i]",
@@ -105,9 +120,9 @@
     "[data-test-id='send-button']",
     "[data-testid='send-button']",
     "button.mat-mdc-icon-button[aria-label*='Send' i]",
-    "button.mat-mdc-icon-button[aria-label*='إرسال' i]",
+    "button.mat-mdc-icon-button[aria-label*='Ø¥Ø±Ø³Ø§Ù„' i]",
     ".input-area button[aria-label*='Send' i]",
-    ".input-area button[aria-label*='إرسال' i]",
+    ".input-area button[aria-label*='Ø¥Ø±Ø³Ø§Ù„' i]",
     "button:has(mat-icon[data-mat-icon-name='send'])",
     "button:has(svg.send-icon)",
     ".send-button-container button"
@@ -121,8 +136,8 @@
     "button[aria-label*='Upload file' i]",
     "button[aria-label*='Upload' i]",
     "button[aria-label*='Attach' i]",
-    "button[aria-label*='إرفاق' i]",
-    "button[aria-label*='إضافة' i]",
+    "button[aria-label*='Ø¥Ø±ÙØ§Ù‚' i]",
+    "button[aria-label*='Ø¥Ø¶Ø§ÙØ©' i]",
     "button.uploader-button",
     "[data-test-id*='upload-button']",
     "[data-test-id*='add-file']",
@@ -198,15 +213,15 @@
 
   const STOP_BUTTON_SELECTORS = [
     "button[aria-label*='Stop' i]",
-    "button[aria-label*='إيقاف' i]",
+    "button[aria-label*='Ø¥ÙŠÙ‚Ø§Ù' i]",
     "button[data-test-id*='stop']",
     "button[mattooltip*='Stop' i]",
-    "button[mattooltip*='إيقاف' i]",
+    "button[mattooltip*='Ø¥ÙŠÙ‚Ø§Ù' i]",
     "button.stop-button",
     ".stop-response-button",
     "[aria-label*='Stop response' i]",
     "[aria-label*='Stop generation' i]",
-    "[aria-label*='إيقاف الرد' i]"
+    "[aria-label*='Ø¥ÙŠÙ‚Ø§Ù Ø§Ù„Ø±Ø¯' i]"
   ];
 
   function isStopButtonElement(target) {
@@ -218,7 +233,7 @@
       const aria = (anyBtn.getAttribute('aria-label') || '').toLowerCase();
       const tooltip = (anyBtn.getAttribute('mattooltip') || '').toLowerCase();
       const text = (anyBtn.innerText || anyBtn.textContent || '').trim().toLowerCase();
-      if (aria.includes('stop') || aria.includes('إيقاف') || tooltip.includes('stop') || tooltip.includes('إيقاف') || text === 'stop' || text === 'stop response' || text === 'إيقاف') {
+      if (aria.includes('stop') || aria.includes('Ø¥ÙŠÙ‚Ø§Ù') || tooltip.includes('stop') || tooltip.includes('Ø¥ÙŠÙ‚Ø§Ù') || text === 'stop' || text === 'stop response' || text === 'Ø¥ÙŠÙ‚Ø§Ù') {
         return true;
       }
       const icon = anyBtn.querySelector('mat-icon, svg, i');
@@ -308,6 +323,7 @@
   // Capture phase listener to detect direct user clicks on Stop response button in Gemini Web
   document.addEventListener('click', (event) => {
     if (!activeRunningJobId || typeof activeCancelHandler !== 'function') return;
+    if (!event.isTrusted) return;
     if (isStopButtonElement(event.target)) {
       console.log(`[MythicFrame BEI] Detected user click on Stop button in Gemini Web! Job: ${activeRunningJobId}`);
       activeCancelHandler('User clicked Stop response button in Gemini Web');
@@ -342,14 +358,14 @@
         const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
         const text = (btn.textContent || '').trim().toLowerCase();
         const html = btn.innerHTML.toLowerCase();
-        const isSendWord = aria.includes('send') || aria.includes('submit') || aria.includes('إرسال') ||
-                           text.includes('send') || text.includes('submit') || text.includes('إرسال');
+        const isSendWord = aria.includes('send') || aria.includes('submit') || aria.includes('Ø¥Ø±Ø³Ø§Ù„') ||
+                           text.includes('send') || text.includes('submit') || text.includes('Ø¥Ø±Ø³Ø§Ù„');
         const hasSendIcon = html.includes('send') || html.includes('arrow_forward') || html.includes('arrow_upward') ||
                             btn.querySelector('mat-icon[fonticon*="send"], [data-mat-icon-name*="send"], svg path');
         if (isSendWord || hasSendIcon) {
           if (!aria.includes('mic') && !aria.includes('voice') && !aria.includes('audio') && 
-              !aria.includes('صوت') && !aria.includes('أدوات') && !aria.includes('tools') && 
-              !aria.includes('add') && !aria.includes('إضافة') && !aria.includes('file') && !aria.includes('upload')) {
+              !aria.includes('ØµÙˆØª') && !aria.includes('Ø£Ø¯ÙˆØ§Øª') && !aria.includes('tools') && 
+              !aria.includes('add') && !aria.includes('Ø¥Ø¶Ø§ÙØ©') && !aria.includes('file') && !aria.includes('upload')) {
             return btn;
           }
         }
@@ -475,12 +491,12 @@
       tag.innerHTML = `
         <span style="font-family:'Luminous Symbols', 'Material Symbols Outlined'; font-size:16px;">brush</span>
         <span>Create image</span>
-        <span style="cursor: pointer; margin-left: 4px; opacity: 0.7; font-size: 14px;" title="Remove" onclick="this.parentElement.remove()">✕</span>
+        <span style="cursor: pointer; margin-left: 4px; opacity: 0.7; font-size: 14px;" title="Remove" onclick="this.parentElement.remove()">âœ•</span>
       `;
 
       // Insert above the text input
       inputContainer.prepend(tag);
-      console.log('✅ [MythicFrame BEI] Visual "Create image" tag injected into chat input.');
+      console.log('âœ… [MythicFrame BEI] Visual "Create image" tag injected into chat input.');
       return true;
     } catch (err) {
       console.warn('[MythicFrame BEI] Error injecting custom tag:', err);
@@ -549,7 +565,7 @@
 
       if (matchOption) {
         matchOption.click();
-        console.log(`✅ [MythicFrame BEI] Successfully selected native aspect ratio: ${normalizedRatio}`);
+        console.log(`âœ… [MythicFrame BEI] Successfully selected native aspect ratio: ${normalizedRatio}`);
         await new Promise(r => setTimeout(r, 200));
       } else {
         console.warn(`[MythicFrame BEI] Option for aspect ratio ${normalizedRatio} not found in menu.`);
@@ -623,7 +639,7 @@
 
       if (matchOption) {
         matchOption.click();
-        console.log(`✅ [MythicFrame BEI] Successfully selected native model quality: ${q}`);
+        console.log(`âœ… [MythicFrame BEI] Successfully selected native model quality: ${q}`);
         await new Promise(r => setTimeout(r, 200));
       } else {
         console.warn(`[MythicFrame BEI] Option for model quality "${q}" not found in menu.`);
@@ -647,14 +663,14 @@
       if (!nativeActive) {
         // Try clicking the native "+" / tools button to select "Create image"
         const toolsBtns = Array.from(document.querySelectorAll(
-          "button[aria-label*='Tools' i], button[aria-label*='Add' i], button[aria-label*='Upload' i], button[aria-label*='أدوات' i], button[aria-label*='إضافة' i], .input-area button, .chat-input-container button"
+          "button[aria-label*='Tools' i], button[aria-label*='Add' i], button[aria-label*='Upload' i], button[aria-label*='Ø£Ø¯ÙˆØ§Øª' i], button[aria-label*='Ø¥Ø¶Ø§ÙØ©' i], .input-area button, .chat-input-container button"
         ));
 
         const addBtn = toolsBtns.find(b => {
           const aria = (b.getAttribute('aria-label') || '').toLowerCase();
           const txt = (b.textContent || '').trim().toLowerCase();
           return aria.includes('add') || aria.includes('tools') || aria.includes('more') || 
-                 aria.includes('إضافة') || aria.includes('أدوات') || txt === '+';
+                 aria.includes('Ø¥Ø¶Ø§ÙØ©') || aria.includes('Ø£Ø¯ÙˆØ§Øª') || txt === '+';
         });
 
         if (addBtn) {
@@ -666,14 +682,14 @@
           const createImgItem = menuItems.find(m => {
             const txt = (m.textContent || '').toLowerCase();
             const aria = (m.getAttribute('aria-label') || '').toLowerCase();
-            return txt.includes('create image') || txt.includes('image') || txt.includes('صورة') ||
-                   txt.includes('إنشاء صورة') || aria.includes('create image') || aria.includes('صورة') ||
+            return txt.includes('create image') || txt.includes('image') || txt.includes('ØµÙˆØ±Ø©') ||
+                   txt.includes('Ø¥Ù†Ø´Ø§Ø¡ ØµÙˆØ±Ø©') || aria.includes('create image') || aria.includes('ØµÙˆØ±Ø©') ||
                    m.querySelector('[data-icon*="brush"], [data-icon*="image"], mat-icon, span.google-symbols, .material-symbols-outlined');
           });
 
           if (createImgItem) {
             createImgItem.click();
-            console.log('✅ [MythicFrame BEI] Native "Create image" tool clicked from menu.');
+            console.log('âœ… [MythicFrame BEI] Native "Create image" tool clicked from menu.');
             await new Promise(r => setTimeout(r, 400));
             nativeActive = true;
           }
@@ -682,7 +698,12 @@
 
       // 2. Select native aspect ratio if available
       if (targetAspectRatio) {
-        await selectNativeAspectRatio(targetAspectRatio);
+        try {
+          await Promise.race([
+            selectNativeAspectRatio(targetAspectRatio),
+            new Promise(r => setTimeout(r, 2000))
+          ]);
+        } catch (e) {}
       }
 
       // 3. Fallback: visual tag injection if native menu was not reachable
@@ -990,10 +1011,9 @@
       const isSendActive = sendBtn !== null;
 
       // Ready when:
-      // A) No spinner, no error, thumbnail or chip rendered, at least 1s elapsed
-      // OR B) Send button is active + no error (Gemini's own client validation confirmed attachments are complete and enabled the button!)
-      const isReadyState = (!isUploading && !hasError && elapsed >= 1000 && hasIndicators) ||
-                           (isSendActive && !hasError && (hasIndicators || thumbnailsReady > 0 || elapsed >= 1200));
+      // Strictly require genuine attachment indicators (chips or thumbnails) before declaring upload complete!
+      // NEVER declare ready based on isSendActive alone, which was enabling submission with 0 attachments.
+      const isReadyState = (!isUploading && !hasError && elapsed >= 1000 && hasIndicators);
 
       if (isReadyState) {
         consecutiveReadyChecks++;
@@ -1054,56 +1074,11 @@
       const dt = new DataTransfer();
       files.forEach(f => dt.items.add(f));
 
-      // Method 1: Find file input using robust locator
-      let fileInput = findGeminiFileInput();
-      if (fileInput) {
-        try {
-          fileInput.files = dt.files;
-          fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-          fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-          console.log('[MythicFrame BEI] Attached references via scoped file input.');
-        } catch (e) {
-          console.debug('[MythicFrame BEI] File input assignment notice:', e);
-        }
-      }
-
-      // Method 2: Multi-target HTML5 Drag & Drop sequence
-      const dropTargets = [
-        composer,
-        composer.closest('rich-textarea') || composer,
-        composer.closest('.input-area') || composer,
-        composer.closest('.chat-input-container') || composer,
-        composer.closest('form') || composer,
-        document.querySelector('.input-area') || composer,
-        document.querySelector('.chat-input-container') || composer,
-        document.querySelector('rich-textarea') || composer,
-        document.querySelector('main') || document.body
-      ].filter(Boolean);
-
-      for (const target of dropTargets) {
-        try {
-          target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt }));
-          target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
-          target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
-        } catch (e) {}
-      }
-      console.log('[MythicFrame BEI] Dispatched Drag & Drop event sequence across composer targets.');
-
-      // Method 3: ClipboardEvent paste on focused composer
-      try {
-        composer.focus();
-        const pasteEvent = new ClipboardEvent('paste', {
-          bubbles: true,
-          cancelable: true,
-          clipboardData: dt
-        });
-        composer.dispatchEvent(pasteEvent);
-      } catch (e) {}
-
-      // Method 4: On-demand upload menu opening fallback if needed
-      await new Promise(r => setTimeout(r, 600));
+      // Step 1: Ensure file input exists or trigger Add/Upload menu to mount it
+      await new Promise(r => setTimeout(r, 400));
       autoDismissConsentDialogs();
 
+      let fileInput = findGeminiFileInput();
       if (!fileInput) {
         const attachBtns = Array.from(document.querySelectorAll(
           "button[aria-label*='Add files' i], button[aria-label*='Add image' i], button[aria-label*='Upload image' i], button[aria-label*='Upload files' i], button[aria-label*='Upload file' i], button[aria-label*='Upload' i], button.uploader-button, [data-test-id*='upload-button'], [data-test-id*='add-file'], button[mattooltip*='Upload' i], button[mattooltip*='Add files' i]"
@@ -1126,16 +1101,51 @@
           } catch (e) {}
         }
 
-        const freshInput = findGeminiFileInput();
-        if (freshInput) {
-          try {
-            freshInput.files = dt.files;
-            freshInput.dispatchEvent(new Event('input', { bubbles: true }));
-            freshInput.dispatchEvent(new Event('change', { bubbles: true }));
-            console.log('[MythicFrame BEI] Attached references via newly mounted file input.');
-          } catch (e) {}
+        fileInput = findGeminiFileInput();
+      }
+
+      // Step 2: Assign files directly to fileInput
+      if (fileInput) {
+        try {
+          fileInput.files = dt.files;
+          fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+          fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+          console.log('[MythicFrame BEI] Attached references via scoped file input.');
+        } catch (e) {
+          console.debug('[MythicFrame BEI] File input assignment notice:', e);
         }
       }
+
+      // Step 3: Multi-target HTML5 Drag & Drop sequence
+      const dropTargets = [
+        composer,
+        composer.closest('rich-textarea') || composer,
+        composer.closest('.input-area') || composer,
+        composer.closest('.chat-input-container') || composer,
+        composer.closest('form') || composer,
+        document.querySelector('.input-area') || composer,
+        document.querySelector('.chat-input-container') || composer,
+        document.querySelector('rich-textarea') || composer,
+        document.querySelector('main') || document.body
+      ].filter(Boolean);
+
+      for (const target of dropTargets) {
+        try {
+          target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt }));
+          target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+          target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        } catch (e) {}
+      }
+
+      // Step 4: ClipboardEvent paste on focused composer
+      try {
+        composer.focus();
+        composer.dispatchEvent(new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dt
+        }));
+      } catch (e) {}
 
       console.log(`[MythicFrame BEI] Dispatched ${files.length} reference image(s) to Gemini. Monitoring upload...`);
       const uploadOk = await waitForAttachmentUploadComplete(files.length, maxUploadWaitMs, jobId);
@@ -1194,6 +1204,19 @@
           return !t.includes('create image') && !t.includes('canvas') && !t.includes('deep research');
         });
 
+        // Hard gate: Ensure the expected number of image chips actually exist!
+        if (imageChips.length < expectedImagesCount) {
+          console.warn('[MythicFrame BEI Verification] Missing image attachment chip in composer. Attempting retry...');
+          if (attempt === 2) {
+            return {
+              ok: false,
+              reason: 'Reference image was not attached to Gemini Web composer. Upload did not take effect.'
+            };
+          }
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+
         // Only detect genuine, visible progress indicators (exclude hidden skeleton placeholders)
         const hasSpinner = imageChips.some(c => {
           const spinner = c.querySelector('mat-progress-spinner, mat-spinner, [role="progressbar"], .uploading-spinner, .upload-progress');
@@ -1247,7 +1270,7 @@
       }
 
       // All verified!
-      console.log('✅ [MythicFrame BEI Verification] Pre-send verification passed completely!');
+      console.log('âœ… [MythicFrame BEI Verification] Pre-send verification passed completely!');
       return { ok: true };
     }
 
@@ -1365,7 +1388,7 @@
 
       for (const img of imagesInLatest) {
         if (protocol.isGeneratedImage(img) && img.complete && (img.naturalWidth > 120 || img.naturalHeight > 120)) {
-          console.log(`✅ [MythicFrame BEI Recovery] Found completed generated image in latest turn for job ${jobId}!`);
+          console.log(`âœ… [MythicFrame BEI Recovery] Found completed generated image in latest turn for job ${jobId}!`);
           const extracted = await extractFullResolutionAsset(img, quality);
           let finalData = extracted.finalData;
           const srcUrl = extracted.srcUrl || img.currentSrc || img.src;
@@ -1396,7 +1419,7 @@
       const respUrls = protocol.extractImageUrlsFromNode(latest);
       if (respUrls.length > 0) {
         const u = respUrls[respUrls.length - 1];
-        console.log(`✅ [MythicFrame BEI Recovery] Found image retrieval URL in latest turn for job ${jobId}: ${u}`);
+        console.log(`âœ… [MythicFrame BEI Recovery] Found image retrieval URL in latest turn for job ${jobId}: ${u}`);
         const base64 = await protocol.fetchBlobAsBase64(u, quality);
         chrome.runtime.sendMessage({
           type: 'GENERATION_COMPLETED',
@@ -1599,10 +1622,10 @@
 
     // Click send button
     if (sendBtn) {
-      console.log('🚀 [MythicFrame BEI] Send button found and clicked!');
+      console.log('ðŸš€ [MythicFrame BEI] Send button found and clicked!');
       sendBtn.click();
     } else {
-      console.warn('⚠️ [MythicFrame BEI] Send button not found in DOM! Attempting dispatchEvent Enter...');
+      console.warn('âš ï¸ [MythicFrame BEI] Send button not found in DOM! Attempting dispatchEvent Enter...');
       // Fallback: Dispatch Enter key
       composer.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Enter',
@@ -2270,11 +2293,27 @@
     ensureTextMessageMode();
     clearComposer();
 
-    const composer = await waitForComposer(15000);
+    let composer = await waitForComposer(15000);
     if (!composer) {
       reportFailed(jobId, 'Composer element not found in Gemini Web.');
       if (keepAlivePort) keepAlivePort.disconnect();
       return;
+    }
+
+    // Attach reference image(s) if provided for vision analysis!
+    if (images && images.length > 0) {
+      reportProgress(jobId, 'uploading_references', `Uploading reference image(s) for vision analysis (1/${images.length})...`);
+      const maxUploadWait = Math.max((timeoutSeconds || 60) * 1000, 120000);
+      const uploadSuccess = await attachReferenceImages(images, composer, jobId, maxUploadWait);
+      if (!uploadSuccess) {
+        clearComposer();
+        if (keepAlivePort) keepAlivePort.disconnect();
+        reportFailed(jobId, 'Failed to upload reference image for vision analysis.');
+        return;
+      }
+      await new Promise(r => setTimeout(r, 800));
+      composer = getComposerElement() || composer;
+      ensureTextMessageMode(); // Ensure image tag wasn't added by upload
     }
 
     // Record response count before sending prompt
@@ -2428,7 +2467,7 @@
           const mediaTab = Array.from(document.querySelectorAll('button, [role="tab"], a, mat-chip, .filter-chip')).find(el => {
             const t = (el.textContent || '').trim().toLowerCase();
             const a = (el.getAttribute('aria-label') || '').toLowerCase();
-            return t.includes('media') || t.includes('الوسائط') || a.includes('media') || a.includes('الوسائط');
+            return t.includes('media') || t.includes('Ø§Ù„ÙˆØ³Ø§Ø¦Ø·') || a.includes('media') || a.includes('Ø§Ù„ÙˆØ³Ø§Ø¦Ø·');
           });
           if (mediaTab && mediaTab.getAttribute('aria-selected') !== 'true') {
             try {
@@ -2470,7 +2509,7 @@
       (async () => {
         try {
           ensureBackgroundCpuAwake();
-          const stopBtn = document.querySelector("button[aria-label*='Stop' i], button[aria-label*='إيقاف' i], button[data-tooltip*='Stop' i]");
+          const stopBtn = document.querySelector("button[aria-label*='Stop' i], button[aria-label*='Ø¥ÙŠÙ‚Ø§Ù' i], button[data-tooltip*='Stop' i]");
           const hasProgressBar = Boolean(document.querySelector('.loading, .shimmer, mat-progress-bar, mat-progress-spinner, [role="progressbar"]'));
           const isGenerating = Boolean(stopBtn || hasProgressBar);
 

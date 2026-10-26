@@ -24,6 +24,7 @@ import Downloads from './components/views/Downloads';
 import QuotaInspector from './components/views/QuotaInspector';
 import MusicStudio from './components/views/MusicStudio';
 import VideoStudio from './components/views/VideoStudio';
+import TurnaroundStudio from './components/views/TurnaroundStudio';
 
 export default function App() {
   const engine = useAppEngine();
@@ -174,6 +175,9 @@ export default function App() {
              )}
              {engine.mode === 'video' && (
                <VideoStudio onNavigate={engine.setMode} />
+             )}
+             {engine.mode === 'turnaround' && (
+               <TurnaroundStudio engine={engine} onNavigate={engine.setMode} />
              )}
           </>
         )}

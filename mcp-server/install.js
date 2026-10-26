@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 
 const configPath = path.join(os.homedir(), ".gemini", "config", "mcp_config.json");
 
-console.log("Reading Antigravity MCP configuration...");
+console.error("Reading Antigravity MCP configuration...");
 
 try {
   let configData = { mcpServers: {} };
@@ -14,7 +14,7 @@ try {
     const rawData = fs.readFileSync(configPath, "utf-8");
     configData = JSON.parse(rawData);
   } else {
-    console.log("No existing configuration found. Creating a new one...");
+    console.error("No existing configuration found. Creating a new one...");
   }
 
   if (!configData.mcpServers) {
@@ -40,8 +40,8 @@ try {
 
   fs.writeFileSync(configPath, JSON.stringify(configData, null, 2));
 
-  console.log("Successfully added 'mythic-image-gen' to Antigravity MCP servers!");
-  console.log(`Config path: ${configPath}`);
+  console.error("Successfully added 'mythic-image-gen' to Antigravity MCP servers!");
+  console.error(`Config path: ${configPath}`);
 } catch (error) {
   console.error("Failed to configure Antigravity MCP servers:", error.message);
 }

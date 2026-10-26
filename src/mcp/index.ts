@@ -15,6 +15,7 @@ import {
   buildBackgroundAssetPrompt,
   buildExtractClothesPrompt,
   buildCardSuggestionsPrompt,
+  buildPropsExtractionPrompt,
   resolveArtStyleSnippet
 } from "../services/promptTemplates.js";
 import { GameContext, BackgroundConfig, MapGridConfig, PoseData } from "../types.js";
@@ -45,7 +46,8 @@ import {
   setActiveBEITab,
   switchAndVerifyBEITab,
   fetchBEILibraryAssets,
-  saveLibraryAssetToFile
+  saveLibraryAssetToFile,
+  queryBEIText
 } from "./beiClient.js";
 
 // Helper to format output instructions for image generation
@@ -120,7 +122,7 @@ const formatTextInstruction = (promptStr: string) => {
 
 // Default empty structures to prevent null errors
 const defaultGameContext: GameContext = { setting: "High Fantasy", tone: "Epic" } as any;
-const defaultBgConfig: BackgroundConfig = { mode: "transparent" } as any;
+const defaultBgConfig: BackgroundConfig = { mode: "atmospheric" } as any;
 
 function getProjectConfig(): {
   projectName?: string;
@@ -502,6 +504,38 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             category: { type: "string", description: "Category name (default 'Custom')" }
           },
           required: ["id", "name", "promptSnippet"]
+        }
+      },
+      {
+        name: "mythic_extract_props",
+        description: "Extracts and categorizes character props, garments, equipment, accessories, and anatomy from a reference image (similar to Lychee Studio Props Extraction node). Returns structured JSON breakdown and isolated generation-ready prompts via BEI with zero API key required.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            image: { type: "string", description: "Absolute path to local character image file or base64 data URI" },
+            granularity: { type: "string", enum: ["minimal", "standard", "detailed"], description: "Level of prop detail: 'minimal' (5-7 macro props), 'standard' (8-10 distinct items), 'detailed' (12-16 items including micro-trim/clasps). Default 'standard'" },
+            mergeSymmetrical: { type: "boolean", description: "If true, merges symmetrical pairs (e.g. boots, gauntlets) into single prop entries. Default true" },
+            includeHeadBody: { type: "boolean", description: "If true, includes facial features, hair, and anatomy as distinct items. If false, focuses strictly on removable clothes, armor, and gear. Default false" },
+            target: { type: "string", enum: ["gemini", "chatgpt"], description: "AI service target (default 'gemini')" },
+            accountSlot: { type: "number", description: "Account slot index (default 0)" },
+            timeoutSeconds: { type: "number", description: "Timeout in seconds (default 180)" }
+          },
+          required: ["image"]
+        }
+      },
+      {
+        name: "mythic_bei_chat",
+        description: "Sends a direct text or multimodal vision inquiry to an active Google Gemini or ChatGPT browser session via BEI with ZERO API key required. Perfect for asking questions about images, analyzing gameplay scenes, or general reasoning without consuming API quota.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            prompt: { type: "string", description: "The inquiry, question, or instruction to send" },
+            images: { type: "array", items: { type: "string" }, description: "Optional array of local image file paths or base64 data URIs to analyze" },
+            target: { type: "string", enum: ["gemini", "chatgpt"], description: "AI service target (default 'gemini')" },
+            accountSlot: { type: "number", description: "Account slot index (default 0)" },
+            timeoutSeconds: { type: "number", description: "Timeout in seconds (default 120)" }
+          },
+          required: ["prompt"]
         }
       }
     ],
@@ -916,6 +950,61 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         text += `  - [${tab.target}] Tab #${tab.tabId} (Slot ${tab.accountSlot ?? 0}) - ${tab.email || 'pending'}\n`;
       });
       return { content: [{ type: "text", text }] };
+    }
+    else if (name === "mythic_bei_chat") {
+      const prompt = args.prompt;
+      const images = args.images || [];
+      const target = args.target || 'gemini';
+      const slot = args.accountSlot ?? 0;
+      const timeout = args.timeoutSeconds || 120;
+
+      const res = await queryBEIText({
+        prompt,
+        images,
+        target,
+        accountSlot: slot,
+        timeoutSeconds: timeout
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: `BEI CHAT RESPONSE (Target: ${target}, Slot ${slot}):\n\n${res.text}`
+        }]
+      };
+    }
+    else if (name === "mythic_extract_props") {
+      const imagePath = args.image;
+      if (!imagePath) {
+        return {
+          content: [{ type: "text", text: "Error: 'image' path or base64 data URI is required." }],
+          isError: true
+        };
+      }
+
+      const granularity = args.granularity || 'standard';
+      const mergeSymmetrical = args.mergeSymmetrical ?? true;
+      const includeHeadBody = Boolean(args.includeHeadBody);
+      const target = args.target || 'gemini';
+      const slot = args.accountSlot ?? 0;
+      const timeout = args.timeoutSeconds || 180;
+
+      const extractionPrompt = buildPropsExtractionPrompt(granularity, mergeSymmetrical, includeHeadBody);
+
+      const res = await queryBEIText({
+        prompt: extractionPrompt,
+        images: [imagePath],
+        target,
+        accountSlot: slot,
+        timeoutSeconds: timeout
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: `PROPS EXTRACTION COMPLETED VIA BEI (Mode: ${granularity}, Merge: ${mergeSymmetrical}):\n\n${res.text}`
+        }]
+      };
     }
     else if (name === "prepare_ui_reimagine_prompt") {
       result = buildUIReimaginePrompt(args.prompt, defaultGameContext, args.styleSnippet || "", true, args.uiMood, undefined, undefined, args.uiArchetype, args.uiMaterial, false);

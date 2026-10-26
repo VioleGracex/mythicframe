@@ -136,6 +136,7 @@ const AppSidebar: React.FC<AppSidebarProps> = ({
            }`}>
              <div className="overflow-hidden space-y-0.5">
                <NavButton targetMode="illustration" />
+               <NavButton targetMode="turnaround" />
                <NavButton targetMode="sprite-sheet" />
                <NavButton targetMode="sprite-strip" />
                <NavButton targetMode="pose-studio" />

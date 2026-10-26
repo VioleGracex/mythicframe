@@ -45,6 +45,33 @@ let lastGeminiDownloadId = null;           // most recent Gemini image download 
 let lastGeminiDownloadAt = 0;
 const removeWhenComplete = new Set();      // download ids to delete from disk once they finish
 
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return 'anonymous';
+  const trimmed = email.trim();
+  const atIdx = trimmed.indexOf('@');
+  if (atIdx === -1) return 'masked';
+  const user = trimmed.slice(0, atIdx);
+  const domain = trimmed.slice(atIdx + 1);
+  const visible = user.slice(0, Math.min(2, user.length));
+  return `${visible}***@${domain}`;
+}
+
+function emitAuditLog(event, details, extra = {}) {
+  try {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "AUDIT_LOG",
+        data: {
+          event,
+          details,
+          timestamp: Date.now(),
+          ...extra
+        }
+      }));
+    }
+  } catch (e) {}
+}
+
 let cachedBrowserInfo = { browser: 'chrome', browserName: 'Google Chrome' };
 async function detectExtensionBrowser() {
   try {
@@ -200,7 +227,7 @@ async function scanGoogleAccounts() {
     await discoverTabs();
 
     // 2. Probe unknown slots 0 through 5
-    const slots = [0, 1, 2, 3, 4, 5];
+    const slots = [0, 1];
     for (const slot of slots) {
       if (knownGoogleAccounts.has(slot) && knownGoogleAccounts.get(slot).email) {
         continue; // Already identified!
@@ -366,8 +393,29 @@ async function injectAllExistingTabs() {
   }
 }
 
-function connectBridge() {
+async function isBridgeServerListening() {
+  try {
+    const res = await fetch("http://127.0.0.1:58925/status", {
+      method: "GET",
+      signal: AbortSignal.timeout ? AbortSignal.timeout(600) : undefined
+    });
+    return res.status < 500;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function connectBridge() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  // Pre-flight check: verify bridge port is listening before creating WebSocket
+  // to completely eliminate net::ERR_CONNECTION_REFUSED error banners in chrome://extensions
+  const isListening = await isBridgeServerListening();
+  if (!isListening) {
+    updateBadge(false);
+    scheduleReconnect();
     return;
   }
 
@@ -862,7 +910,7 @@ async function waitForTabReady(tabId, timeoutMs = 20000) {
  * Deduplicates strictly: checks "MythicFrame BEI" tab group first, all open tabs second.
  * Reuses existing tabs to 100% eliminate duplicate tabs in the browser.
  */
-async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null) {
+async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null, dispatchMode = 'single') {
   const targetSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
   const lockKey = `${target}:${targetSlot}`;
 
@@ -889,22 +937,66 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
     }
 
     if (target === "gemini") {
+      const getSlotFromUrl = (urlStr) => {
+        const u = (urlStr || '').toLowerCase();
+        const m = u.match(/\/u\/(\d+)/);
+        return m ? parseInt(m[1], 10) : 0;
+      };
+
       const isSlotMatch = (t) => {
         const u = (t.url || t.pendingUrl || '').toLowerCase();
         if (!u.includes("gemini.google.com")) return false;
-        const slotMatch = u.match(/\/u\/(\d+)/);
-        const slot = slotMatch ? parseInt(slotMatch[1], 10) : 0;
-        return slot === targetSlot;
+        return getSlotFromUrl(u) === targetSlot;
       };
 
-      // 1. Prioritize tabs already on /app (composer page)
-      let matchedTab = allTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t) && (t.url || '').includes('/app')) ||
-                       allTabs.find(t => isSlotMatch(t) && (t.url || '').includes('/app')) ||
-                       allTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t)) ||
-                       allTabs.find(t => isSlotMatch(t));
+      const allGeminiTabs = allTabs.filter(t => (t.url || t.pendingUrl || '').toLowerCase().includes("gemini.google.com"));
+
+      // 1. Prioritize tabs already matching targetSlot (preferring composer /app)
+      let matchedTab = allGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t) && (t.url || '').includes('/app')) ||
+                       allGeminiTabs.find(t => isSlotMatch(t) && (t.url || '').includes('/app')) ||
+                       allGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t)) ||
+                       allGeminiTabs.find(t => isSlotMatch(t));
+
+      // 2. In single mode (non-batch), if no exact slot match, REUSE ANY open Gemini tab!
+      if (!matchedTab && dispatchMode !== 'multi' && allGeminiTabs.length > 0) {
+        matchedTab = allGeminiTabs.find(t => beiGroupTabIds.has(t.id) && (t.url || '').includes('/app')) ||
+                     allGeminiTabs.find(t => (t.url || '').includes('/app')) ||
+                     allGeminiTabs.find(t => beiGroupTabIds.has(t.id)) ||
+                     allGeminiTabs[0];
+        if (matchedTab) {
+          const adoptedSlot = getSlotFromUrl(matchedTab.url || matchedTab.pendingUrl);
+          console.log(`[MythicFrame BEI] Slot ${targetSlot} requested, but found existing Gemini tab ${matchedTab.id} on slot ${adoptedSlot}. Reusing tab to prevent duplicate tab creation.`);
+        }
+      }
 
       if (matchedTab && matchedTab.id) {
-        console.log(`[MythicFrame BEI] Reusing existing Gemini tab ${matchedTab.id} for slot ${targetSlot} (In BEI Group: ${beiGroupTabIds.has(matchedTab.id)}).`);
+        const currentUrl = matchedTab.url || matchedTab.pendingUrl || '';
+        const actualSlot = getSlotFromUrl(currentUrl);
+        const email = await extractTabEmail(matchedTab.id, "gemini", actualSlot);
+
+        // Deduplicate: Clean up redundant duplicate tabs opened for this exact account slot
+        const duplicateTabs = allGeminiTabs.filter(t => t.id !== matchedTab.id && getSlotFromUrl(t.url || t.pendingUrl) === actualSlot);
+        for (const dup of duplicateTabs) {
+          console.log(`[MythicFrame BEI] Closing redundant duplicate Gemini tab ${dup.id} for slot ${actualSlot}...`);
+          try {
+            await chrome.tabs.remove(dup.id);
+            emitAuditLog('TAB_CLOSED', `Deduplicated redundant Gemini tab ${dup.id} for slot ${actualSlot}`, {
+              tabId: dup.id,
+              accountSlot: actualSlot,
+              email: maskEmail(tabEmailsCache.get(dup.id) || email),
+              reason: 'tab_deduplication'
+            });
+          } catch (e) {}
+        }
+
+        console.log(`[MythicFrame BEI] Reusing existing Gemini tab ${matchedTab.id} for slot ${actualSlot} (In BEI Group: ${beiGroupTabIds.has(matchedTab.id)}).`);
+        emitAuditLog('TAB_REUSED', `Reusing Gemini tab ${matchedTab.id} on slot ${actualSlot}`, {
+          tabId: matchedTab.id,
+          target: 'gemini',
+          accountSlot: actualSlot,
+          email: maskEmail(email),
+          isBatch: dispatchMode === 'multi'
+        });
 
         // Ensure tab is organized into BEI group immediately
         await organizeTabIntoBEIGroup(matchedTab.id, tabMode, bringTabToFront);
@@ -918,23 +1010,28 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
           } catch (e) {}
         }
 
-        // Handle chatSessionMode:
-        // 'same_chat': keep the active conversation (/app/<chat_id>), do NOT force navigation to /app!
-        // 'new_chat': explicitly navigate to /app to start a new chat.
-        // 'temporary_chat': keep active /app* conversation if present; navigate only if on /library or settings.
-        const currentUrl = matchedTab.url || matchedTab.pendingUrl || '';
         const isInApp = currentUrl.includes('/app');
         if (chatSessionMode === 'new_chat') {
-          console.log(`[MythicFrame BEI] 'new_chat' requested: Navigating tab ${matchedTab.id} to clean /u/${targetSlot}/app...`);
+          console.log(`[MythicFrame BEI] 'new_chat' requested: Navigating tab ${matchedTab.id} to clean /u/${actualSlot}/app...`);
           try {
-            await chrome.tabs.update(matchedTab.id, { url: `https://gemini.google.com/u/${targetSlot}/app` });
+            await chrome.tabs.update(matchedTab.id, { url: `https://gemini.google.com/u/${actualSlot}/app` });
             await waitForTabReady(matchedTab.id, 12000);
+            emitAuditLog('TAB_NAVIGATED', `Navigated tab ${matchedTab.id} to /u/${actualSlot}/app (new_chat)`, {
+              tabId: matchedTab.id,
+              accountSlot: actualSlot,
+              email: maskEmail(email)
+            });
           } catch (e) {}
         } else if (!isInApp) {
-          console.log(`[MythicFrame BEI] Tab ${matchedTab.id} not on /app (${currentUrl}). Navigating to /u/${targetSlot}/app...`);
+          console.log(`[MythicFrame BEI] Tab ${matchedTab.id} not on /app (${currentUrl}). Navigating to /u/${actualSlot}/app...`);
           try {
-            await chrome.tabs.update(matchedTab.id, { url: `https://gemini.google.com/u/${targetSlot}/app` });
+            await chrome.tabs.update(matchedTab.id, { url: `https://gemini.google.com/u/${actualSlot}/app` });
             await waitForTabReady(matchedTab.id, 12000);
+            emitAuditLog('TAB_NAVIGATED', `Navigated tab ${matchedTab.id} from ${currentUrl} to /u/${actualSlot}/app`, {
+              tabId: matchedTab.id,
+              accountSlot: actualSlot,
+              email: maskEmail(email)
+            });
           } catch (e) {}
         } else {
           console.log(`[MythicFrame BEI] Reusing active chat thread on tab ${matchedTab.id} (${currentUrl}) without reloading.`);
@@ -949,8 +1046,8 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
         return matchedTab.id;
       }
 
-      // 3. Open a single new tab only when none exists
-      console.log(`[MythicFrame BEI Worker] Opening single tab for Gemini slot ${targetSlot} (Mode: ${tabMode}, Focus: ${bringTabToFront})...`);
+      // 3. Open a single new tab (in batch mode, allows 1 tab per distinct email account)
+      console.log(`[MythicFrame BEI Worker] Opening single tab for Gemini slot ${targetSlot} (Mode: ${tabMode}, Focus: ${bringTabToFront}, Batch: ${dispatchMode === 'multi'})...`);
       const newTabProps = {
         url: `https://gemini.google.com/u/${targetSlot}/app`,
         active: Boolean(bringTabToFront)
@@ -976,6 +1073,15 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       await organizeTabIntoBEIGroup(newTab.id, tabMode, bringTabToFront);
       await waitForTabReady(newTab.id, 15000);
       await ensureContentScriptInjected(newTab.id, "gemini");
+
+      const email = await extractTabEmail(newTab.id, "gemini", targetSlot);
+      emitAuditLog('TAB_OPENED', `Opened new Gemini tab ${newTab.id} for slot ${targetSlot}`, {
+        tabId: newTab.id,
+        target: 'gemini',
+        accountSlot: targetSlot,
+        email: maskEmail(email),
+        isBatch: dispatchMode === 'multi'
+      });
 
       const updatedTabs = await discoverTabs();
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1118,40 +1224,8 @@ async function dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds 
     console.warn(`[MythicFrame BEI] Background tab reload notice:`, reloadErr.message);
   }
 
-  // Step 3: Fresh background tab recovery
-  try {
-    console.log(`[MythicFrame BEI] Creating fresh recovery tab for target ${target} (slot ${accountSlot})...`);
-    const newTab = await chrome.tabs.create({
-      url: target === "gemini" ? `https://gemini.google.com/u/${accountSlot}/app` : "https://chatgpt.com/",
-      active: Boolean(bringTabToFront)
-    });
-    await waitForTabReady(newTab.id);
-    await organizeTabIntoBEIGroup(newTab.id, tabMode, bringTabToFront);
-    await ensureContentScriptInjected(newTab.id, target);
-    await new Promise(r => setTimeout(r, 2000));
+  // Step 3: Direct execution fallback via chrome.scripting.executeScript (No uncontrolled recovery tabs)
 
-    activeJobs.set(jobId, { tabId: newTab.id, target, prompt, accountSlot });
-
-    const resp = await new Promise((resolve, reject) => {
-      chrome.tabs.sendMessage(newTab.id, {
-        action: "EXECUTE_PROMPT",
-        data: { jobId, target, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality }
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(response);
-        }
-      });
-    });
-    if (resp && resp.success) {
-      return { success: true, method: 'fresh_tab_message' };
-    }
-  } catch (freshErr) {
-    console.warn(`[MythicFrame BEI] Fresh tab dispatch notice:`, freshErr.message);
-  }
-
-  // Step 4: Direct execution fallback via chrome.scripting.executeScript
   console.log(`[MythicFrame BEI] Dispatching via direct executeScript fallback to tab ${tabId}...`);
   try {
     const results = await chrome.scripting.executeScript({
@@ -1196,12 +1270,21 @@ function isSlotBusy(target, slot) {
 async function startJob(jobData) {
   const { jobId, target, prompt, fullPrompt, aspectRatio = (storedDefaultAspectRatio || '1:1'), modelQuality = (storedDefaultModelQuality || 'auto'), accountSlot = 0, timeoutSeconds, images = [], tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null, quality = 'ultra_original' } = jobData;
   const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
-  const tabId = await findOrCreateTab(target, parsedSlot, tabMode, bringTabToFront, chatSessionMode, tabSessionId);
+  const tabId = await findOrCreateTab(target, parsedSlot, tabMode, bringTabToFront, chatSessionMode, tabSessionId, jobData.dispatchMode || 'single');
   if (!tabId) {
     throw new Error(`No available browser tab found or created for target: ${target} (slot: ${parsedSlot})`);
   }
 
-  activeJobs.set(jobId, { tabId, target, prompt, fullPrompt, accountSlot: parsedSlot, aspectRatio, modelQuality, submitted: false });
+  activeJobs.set(jobId, { tabId, target, prompt, fullPrompt, accountSlot: parsedSlot, aspectRatio, modelQuality, submitted: false, dispatchMode: jobData.dispatchMode || 'single' });
+  emitAuditLog("PROMPT_DISPATCHED", `Dispatched prompt to ${target} tab ${tabId} (slot ${parsedSlot}, batch: ${jobData.dispatchMode === 'multi'})`, {
+    jobId,
+    target,
+    accountSlot: parsedSlot,
+    email: maskEmail(tabEmailsCache.get(tabId)),
+    promptSummary: prompt ? prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '') : '',
+    promptLength: prompt ? prompt.length : 0,
+    isBatch: jobData.dispatchMode === 'multi'
+  });
   persistSessionJobs();
 
   // Ghost Mode: Never steal OS window focus or hijack the user's active browsing tab
@@ -1372,6 +1455,7 @@ async function handleBridgeCommand(msg) {
   if (type === "FETCH_LIBRARY_ASSETS") {
     const { target = "gemini", accountSlot = 0, limit = 5 } = data || {};
     const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
+    let tempTabId = null;
     try {
       const allTabs = await chrome.tabs.query({});
       let libTab = allTabs.find(t => {
@@ -1379,10 +1463,14 @@ async function handleBridgeCommand(msg) {
         return u.includes(`gemini.google.com/u/${parsedSlot}/library`) || (parsedSlot === 0 && u.includes('gemini.google.com/library'));
       });
       if (!libTab) {
+        libTab = allTabs.find(t => (t.url || '').toLowerCase().includes('gemini.google.com/library'));
+      }
+      if (!libTab) {
         libTab = await chrome.tabs.create({
           url: `https://gemini.google.com/u/${parsedSlot}/library`,
           active: false
         });
+        tempTabId = libTab.id;
         await waitForTabReady(libTab.id, 15000);
       }
       await ensureContentScriptInjected(libTab.id, "gemini");
@@ -1392,6 +1480,9 @@ async function handleBridgeCommand(msg) {
         action: "EXTRACT_LIBRARY_ASSETS",
         data: { limit, accountSlot: parsedSlot }
       }, (res) => {
+        if (tempTabId) {
+          try { chrome.tabs.remove(tempTabId); } catch (e) {}
+        }
         if (chrome.runtime.lastError || !res) {
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
@@ -1409,6 +1500,9 @@ async function handleBridgeCommand(msg) {
         }
       });
     } catch (err) {
+      if (tempTabId) {
+        try { chrome.tabs.remove(tempTabId); } catch (e) {}
+      }
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "LIBRARY_ASSETS_FETCHED",
@@ -1441,13 +1535,21 @@ async function handleBridgeCommand(msg) {
     const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot = 0, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single' } = data;
     let parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
 
-    // Multi-Account Mode: Only auto-route to an idle slot if explicitly enabled with multi mode and no specific slot was requested
-    if (dispatchMode === 'multi' && data.accountSlot === undefined && isSlotBusy(target, parsedSlot)) {
+    // Multi-Account Mode: Route to an idle account slot when multi mode is active and current slot is busy
+    if (dispatchMode === 'multi' && isSlotBusy(target, parsedSlot)) {
       console.log(`[MythicFrame BEI Worker] Multi-Account Mode: Slot ${target}:${parsedSlot} is busy. Finding idle account slot...`);
-      const candidateSlots = [0, 1, 2, 3];
+      const knownSlots = Array.from(knownGoogleAccounts.keys());
+      const candidateSlots = knownSlots.length > 0 ? knownSlots : [0, 1, 2, 3];
       const idleSlot = candidateSlots.find(s => !isSlotBusy(target, s));
       if (idleSlot !== undefined) {
         console.log(`[MythicFrame BEI Worker] Multi-Account Mode: Auto-routed job ${jobId} to idle slot ${idleSlot} for parallel execution!`);
+        emitAuditLog('BATCH_SLOT_ASSIGNED', `Auto-routed batch job ${jobId} to idle slot ${idleSlot}`, {
+          jobId,
+          target,
+          accountSlot: idleSlot,
+          isBatch: true,
+          email: maskEmail(knownGoogleAccounts.get(idleSlot)?.email)
+        });
         parsedSlot = idleSlot;
       }
     }
@@ -2223,12 +2325,24 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const cachedEmail = tabEmailsCache.get(tabId);
   tabEmailsCache.delete(tabId);
+  let activeJobFound = false;
+
   for (const [jobId, job] of activeJobs.entries()) {
     if (job.tabId === tabId) {
+      activeJobFound = true;
       const target = job.target;
       const slot = job.accountSlot;
       activeJobs.delete(jobId);
+      emitAuditLog("TAB_CLOSED", `Tab ${tabId} was closed while executing job ${jobId}`, {
+        tabId,
+        target,
+        accountSlot: slot,
+        email: maskEmail(cachedEmail),
+        jobId,
+        reason: "closed_during_generation"
+      });
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "GENERATION_FAILED",
@@ -2237,6 +2351,14 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       }
       processNextInQueue(target, slot);
     }
+  }
+
+  if (!activeJobFound) {
+    emitAuditLog("TAB_CLOSED", `Tab ${tabId} was closed`, {
+      tabId,
+      email: maskEmail(cachedEmail),
+      reason: "user_or_browser_closed"
+    });
   }
 });
 

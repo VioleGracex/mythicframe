@@ -7,9 +7,9 @@
     "defaultStyleId": "arknights_tactical"
   },
   "activeArtStyle": {
-    "id": "arknights_tactical",
-    "name": "Tactical Dark Fantasy",
-    "promptSnippet": ", arknights style, tactical anime aesthetic, urban dark fantasy, muted colors with vibrant highlights"
+    "id": "none",
+    "name": "No Style",
+    "promptSnippet": ""
   },
   "defaultModelQuality": "auto",
   "autoExecuteGeneration": true

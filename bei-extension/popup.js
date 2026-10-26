@@ -77,6 +77,7 @@ async function updateTabs() {
 
     const tabs = resp.tabs || [];
     const geminiTab = tabs.find(t => t.target === 'gemini');
+    const chatgptTab = tabs.find(t => t.target === 'chatgpt');
     const accounts = resp.accounts || [];
 
     if (geminiTab) {

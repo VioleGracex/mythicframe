@@ -28,6 +28,7 @@ export const translations = {
     batch: "Batch Studio",
     music: "Game Music & Audio",
     video: "Cutscenes & Video",
+    turnaround: "Turnaround & 3D",
 
     // Dashboard
     welcome: "Welcome to MythicFrame",
@@ -234,6 +235,7 @@ export const translations = {
     batch: "Пакетная Студия",
     music: "Музыка и Аудио",
     video: "Катсцены и Видео",
+    turnaround: "3D Поворот и Модель",
 
     // Dashboard
     welcome: "Добро пожаловать в MythicFrame",

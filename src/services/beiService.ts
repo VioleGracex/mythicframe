@@ -804,6 +804,7 @@ export const generateBEIText = async (prompt: string, timeoutSeconds = 60, image
 
   const payload = {
     prompt,
+    images,
     target: config.target,
     accountSlot: config.accountSlot || 0,
     timeoutSeconds,

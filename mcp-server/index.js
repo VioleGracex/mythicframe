@@ -1166,6 +1166,43 @@ CORE DESCRIPTION: ${userPrompt || "A detailed game map"}
 [FINAL REMINDER]: ONLY generate environment and decorations. ABSOLUTELY NO CHARACTERS OR UI ELEMENTS.`;
   return fullPrompt;
 };
+var buildPropsExtractionPrompt = (granularity = "standard", mergeSymmetrical = true, includeHeadBody = false) => {
+  const counts = {
+    minimal: "5 to 7 key macro items",
+    standard: "8 to 10 distinct items",
+    detailed: "12 to 16 detailed items (including trim, secondary clasps, straps, and accessories)"
+  }[granularity] || "8 to 10 distinct items";
+  return `You are an expert game art asset director and 2D/3D concept pipeline analyzer (similar to Lychee Studio Props Extraction).
+Carefully analyze the attached character / reference image and deconstruct it into its individual equipment, clothing, accessory, and weapon assets.
+
+EXTRACTION GUIDELINES:
+1. Extract exactly ${counts}.
+2. Symmetrical items: ${mergeSymmetrical ? 'MERGE left and right pairs into a single prop entry (e.g., "Pair of Leather Boots", "Steel Gauntlets").' : "SEPARATE left and right items if they exhibit distinct asymmetrical features."}
+3. Head & Anatomy: ${includeHeadBody ? "INCLUDE head, facial features, hairstyle, and body anatomy as distinct prop/anatomy items." : "EXCLUDE basic anatomy and facial features. Focus strictly on removable clothing, armor, belts, jewelry, weapons, footwear, and carried gear."}
+4. For every extracted prop, provide:
+   - "id": A clean snake_case identifier (e.g., "prop_01_rapier")
+   - "name": Concise descriptive name (e.g., "Duelist's Ornate Rapier")
+   - "category": One of ["weapon", "outerwear", "undergarment", "footwear", "accessory", "headgear", "anatomy", "fx"]
+   - "visual_description": Precise physical description from the image (colors, materials, embroidery, weathering, metal type, gems)
+   - "generation_ready_prompt": An isolated, self-contained text-to-image prompt to synthesize or model this exact single prop on an absolute clean flat white background (#FFFFFF) with high detail and zero characters attached.
+
+OUTPUT FORMAT:
+Respond with a clear character summary, followed by a valid JSON block enclosed in \`\`\`json:
+{
+  "character_summary": "Brief visual summary of character archetype, color palette, and style",
+  "props": [
+    {
+      "id": "prop_01_...",
+      "name": "...",
+      "category": "...",
+      "visual_description": "...",
+      "generation_ready_prompt": "... isolated on flat white background (#FFFFFF), clean high contrast game asset, no characters, solo item"
+    }
+  ]
+}
+
+Also provide a clean, readable Markdown table summarizing all extracted props.`;
+};
 
 // src/mcp/index.ts
 import fs2 from "fs";
@@ -1384,6 +1421,23 @@ async function setActiveBEITab(target = "gemini", accountSlot = 0) {
     return { success: false, message: `Could not reach BEI Bridge: ${err.message}` };
   }
 }
+async function switchAndVerifyBEITab(target = "gemini", accountSlot = 0, tabId, bringTabToFront = false) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/switch-and-verify-tab`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, accountSlot, tabId, bringTabToFront })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      return { success: false, message: `Failed to verify tab: ${errText}` };
+    }
+    const data = await res.json();
+    return { success: true, message: `Tab verified successfully`, data };
+  } catch (err) {
+    return { success: false, message: `Could not reach BEI Bridge: ${err.message}` };
+  }
+}
 async function fetchBEILibraryAssets(target = "gemini", accountSlot = 0, limit = 5) {
   try {
     const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/library`, {
@@ -1445,7 +1499,7 @@ async function getMythicSettings() {
       bridgeRunning: Boolean(statusData),
       bridgePort: BRIDGE_PORT,
       webPort: WEB_PORT,
-      extensionVersion: statusData?.extensionVersion || "1.5.3",
+      extensionVersion: statusData?.extensionVersion || "1.5.5",
       connected: Boolean(statusData?.connected),
       accounts: statusData?.accounts || [],
       tabs: statusData?.tabs || [],
@@ -1466,7 +1520,7 @@ async function generateWithBEI(options) {
     accountSlot = 0,
     images = [],
     timeoutSeconds = 900,
-    tabMode = "new_window_group",
+    tabMode = "same_window_group",
     bringTabToFront = false,
     quality = "ultra_original",
     dispatchMode = "single",
@@ -1515,18 +1569,43 @@ async function generateWithBEI(options) {
     }
   } catch (err) {
     chatError = err;
-    console.warn(`[MythicFrame BEI] Chat generation did not catch image: ${err.message}. Initiating Automated Library Failover Protocol...`);
+    console.warn(`[MythicFrame BEI] Chat generation did not catch image: ${err.message}. Initiating Automated Tab Harvest & Failover Protocol...`);
+  }
+  if (!result || !result.image) {
+    try {
+      console.log(`[MythicFrame BEI] Attempting active tab verification & DOM harvest on ${target} slot ${accountSlot}...`);
+      const verifyRes = await switchAndVerifyBEITab(target, accountSlot);
+      if (verifyRes.success && verifyRes.data?.hasImage && verifyRes.data?.image) {
+        const harvested = verifyRes.data.image;
+        const imgPayload = harvested.base64 || harvested.highResUrl || harvested.src;
+        if (imgPayload) {
+          console.log(`[MythicFrame BEI] Successfully harvested rendered image from active tab!`);
+          result = {
+            success: true,
+            image: imgPayload,
+            jobId: `harvested_${Date.now()}`,
+            metadata: {
+              recoveredViaTabVerify: true,
+              alt: harvested.alt || "",
+              url: verifyRes.data.url
+            }
+          };
+        }
+      }
+    } catch (verifyErr) {
+      console.warn(`[MythicFrame BEI] Tab verify & harvest notice: ${verifyErr.message}`);
+    }
   }
   if (!result || !result.image) {
     if (target === "gemini") {
       try {
-        console.error(`[MythicFrame BEI] Querying Google Gemini Library (Slot ${accountSlot}) for recent generation fallback...`);
+        console.log(`[MythicFrame BEI] Querying Google Gemini Library (Slot ${accountSlot}) for recent generation fallback...`);
         const libRes = await fetchBEILibraryAssets("gemini", accountSlot, 6);
         if (libRes.success && Array.isArray(libRes.assets) && libRes.assets.length > 0) {
           const latestAsset = libRes.assets[0];
           const assetUrl = latestAsset.highResUrl || latestAsset.src;
           if (assetUrl) {
-            console.error(`[MythicFrame BEI] Automatically recovered image from Google Gemini Library: ${assetUrl}`);
+            console.log(`[MythicFrame BEI] Automatically recovered image from Google Gemini Library: ${assetUrl}`);
             const saved = await saveLibraryAssetToFile(assetUrl, "bei_library_failover");
             if (saved) {
               return {
@@ -1591,6 +1670,51 @@ async function generateWithBEI(options) {
     imageBase64: result.image,
     jobId: result.jobId,
     metadata: result.metadata
+  };
+}
+async function queryBEIText(options) {
+  const {
+    prompt,
+    images = [],
+    target = "gemini",
+    accountSlot = 0,
+    timeoutSeconds = 120
+  } = options;
+  const processedImages = [];
+  for (const img of images) {
+    if (img.startsWith("data:image/")) {
+      processedImages.push(img);
+    } else if (fs.existsSync(img)) {
+      const ext = path.extname(img).toLowerCase();
+      const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+      const b64 = fs.readFileSync(img).toString("base64");
+      processedImages.push(`data:${mime};base64,${b64}`);
+    }
+  }
+  const payload = {
+    prompt,
+    images: processedImages,
+    target,
+    accountSlot,
+    timeoutSeconds
+  };
+  const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/text`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(errorData.message || `BEI text query failed with status ${response.status}`);
+  }
+  const result = await response.json();
+  if (!result.success || typeof result.text !== "string") {
+    throw new Error(result.error || result.message || "BEI bridge did not return a valid text response.");
+  }
+  return {
+    success: true,
+    text: result.text,
+    jobId: result.jobId
   };
 }
 
@@ -1684,7 +1808,7 @@ ${promptStr}
 ---END PROMPT---`;
 };
 var defaultGameContext = { setting: "High Fantasy", tone: "Epic" };
-var defaultBgConfig = { mode: "transparent" };
+var defaultBgConfig = { mode: "atmospheric" };
 function getProjectConfig() {
   const projectRoot = process.env.MYTHICFRAME_ROOT || (fs2.existsSync(path2.join(process.cwd(), "package.json")) ? process.cwd() : path2.resolve(path2.dirname(process.argv[1] || process.cwd()), ".."));
   const projectFile = path2.join(projectRoot, "mythic_project.json");
@@ -1932,6 +2056,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: "mythic_switch_and_verify_tab",
+        description: "Brings the Google Gemini or ChatGPT tab to the foreground, focuses its browser window to defeat background DOM throttling, checks live generation status, and harvests any completed image directly from the DOM.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            target: { type: "string", enum: ["gemini", "chatgpt"], description: "Browser target (default 'gemini')" },
+            accountSlot: { type: "number", description: "Account slot (default 0)" },
+            tabId: { type: "number", description: "Optional specific tab ID to activate and verify" },
+            bringTabToFront: { type: "boolean", description: "If true, explicitly brings window and tab to foreground. Default: false (Silent background ghost mode)." }
+          },
+          required: []
+        }
+      },
+      {
         name: "mythic_fetch_library_assets",
         description: "Fetches generated image assets from Google Gemini Web Library (/library). Supports keyword searching and auto-downloading assets to local disk. Useful when DOM chat extraction fails or to retrieve past generated images.",
         inputSchema: {
@@ -2043,6 +2181,38 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             category: { type: "string", description: "Category name (default 'Custom')" }
           },
           required: ["id", "name", "promptSnippet"]
+        }
+      },
+      {
+        name: "mythic_extract_props",
+        description: "Extracts and categorizes character props, garments, equipment, accessories, and anatomy from a reference image (similar to Lychee Studio Props Extraction node). Returns structured JSON breakdown and isolated generation-ready prompts via BEI with zero API key required.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            image: { type: "string", description: "Absolute path to local character image file or base64 data URI" },
+            granularity: { type: "string", enum: ["minimal", "standard", "detailed"], description: "Level of prop detail: 'minimal' (5-7 macro props), 'standard' (8-10 distinct items), 'detailed' (12-16 items including micro-trim/clasps). Default 'standard'" },
+            mergeSymmetrical: { type: "boolean", description: "If true, merges symmetrical pairs (e.g. boots, gauntlets) into single prop entries. Default true" },
+            includeHeadBody: { type: "boolean", description: "If true, includes facial features, hair, and anatomy as distinct items. If false, focuses strictly on removable clothes, armor, and gear. Default false" },
+            target: { type: "string", enum: ["gemini", "chatgpt"], description: "AI service target (default 'gemini')" },
+            accountSlot: { type: "number", description: "Account slot index (default 0)" },
+            timeoutSeconds: { type: "number", description: "Timeout in seconds (default 180)" }
+          },
+          required: ["image"]
+        }
+      },
+      {
+        name: "mythic_bei_chat",
+        description: "Sends a direct text or multimodal vision inquiry to an active Google Gemini or ChatGPT browser session via BEI with ZERO API key required. Perfect for asking questions about images, analyzing gameplay scenes, or general reasoning without consuming API quota.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            prompt: { type: "string", description: "The inquiry, question, or instruction to send" },
+            images: { type: "array", items: { type: "string" }, description: "Optional array of local image file paths or base64 data URIs to analyze" },
+            target: { type: "string", enum: ["gemini", "chatgpt"], description: "AI service target (default 'gemini')" },
+            accountSlot: { type: "number", description: "Account slot index (default 0)" },
+            timeoutSeconds: { type: "number", description: "Timeout in seconds (default 120)" }
+          },
+          required: ["prompt"]
         }
       }
     ]
@@ -2231,6 +2401,44 @@ Summary: ${status.summary}`;
       const slot = args.accountSlot ?? 0;
       const res = await setActiveBEITab(target, slot);
       return { content: [{ type: "text", text: res.message }] };
+    } else if (name === "mythic_switch_and_verify_tab") {
+      const target = args.target || "gemini";
+      const slot = args.accountSlot ?? 0;
+      const res = await switchAndVerifyBEITab(target, slot, args.tabId, Boolean(args.bringTabToFront));
+      if (!res.success) {
+        return { content: [{ type: "text", text: `Tab verification failed: ${res.message}` }], isError: true };
+      }
+      const data = res.data || {};
+      let imgSection = "";
+      if (data.hasImage && data.image) {
+        const harvested = data.image;
+        const imgPayload = harvested.base64 || harvested.highResUrl || harvested.src;
+        if (imgPayload) {
+          const saved = await saveLibraryAssetToFile(imgPayload, "harvested_tab");
+          if (saved) {
+            const formattedPath = saved.filePath.replace(/\\/g, "/");
+            const fileName = path2.basename(saved.filePath);
+            imgSection = `
+
+HARVESTED IMAGE SAVED TO DISK:
+- File: ${saved.filePath} (${saved.sizeMB})
+- Link: [${fileName}](file:///${formattedPath})
+`;
+          }
+        }
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `TAB SWITCHED & VERIFIED:
+- Target: ${data.target || target} (Slot ${slot})
+- Tab ID: ${data.tabId}
+- Title: ${data.title || "N/A"}
+- URL: ${data.url || "N/A"}
+- Is Generating: ${data.isGenerating ? "YES (In Progress)" : "NO"}
+- Has Rendered Image: ${data.hasImage ? "YES" : "NO"}${imgSection}`
+        }]
+      };
     } else if (name === "mythic_fetch_library_assets") {
       const target = args.target || "gemini";
       const slot = args.accountSlot ?? 0;
@@ -2469,6 +2677,57 @@ Connected Browser Tabs (${settings.tabs?.length || 0}):
 `;
       });
       return { content: [{ type: "text", text }] };
+    } else if (name === "mythic_bei_chat") {
+      const prompt = args.prompt;
+      const images = args.images || [];
+      const target = args.target || "gemini";
+      const slot = args.accountSlot ?? 0;
+      const timeout = args.timeoutSeconds || 120;
+      const res = await queryBEIText({
+        prompt,
+        images,
+        target,
+        accountSlot: slot,
+        timeoutSeconds: timeout
+      });
+      return {
+        content: [{
+          type: "text",
+          text: `BEI CHAT RESPONSE (Target: ${target}, Slot ${slot}):
+
+${res.text}`
+        }]
+      };
+    } else if (name === "mythic_extract_props") {
+      const imagePath = args.image;
+      if (!imagePath) {
+        return {
+          content: [{ type: "text", text: "Error: 'image' path or base64 data URI is required." }],
+          isError: true
+        };
+      }
+      const granularity = args.granularity || "standard";
+      const mergeSymmetrical = args.mergeSymmetrical ?? true;
+      const includeHeadBody = Boolean(args.includeHeadBody);
+      const target = args.target || "gemini";
+      const slot = args.accountSlot ?? 0;
+      const timeout = args.timeoutSeconds || 180;
+      const extractionPrompt = buildPropsExtractionPrompt(granularity, mergeSymmetrical, includeHeadBody);
+      const res = await queryBEIText({
+        prompt: extractionPrompt,
+        images: [imagePath],
+        target,
+        accountSlot: slot,
+        timeoutSeconds: timeout
+      });
+      return {
+        content: [{
+          type: "text",
+          text: `PROPS EXTRACTION COMPLETED VIA BEI (Mode: ${granularity}, Merge: ${mergeSymmetrical}):
+
+${res.text}`
+        }]
+      };
     } else if (name === "prepare_ui_reimagine_prompt") {
       result = buildUIReimaginePrompt(args.prompt, defaultGameContext, args.styleSnippet || "", true, args.uiMood, void 0, void 0, args.uiArchetype, args.uiMaterial, false);
       aspectRatio = args.aspectRatio || "16:9";
@@ -2643,7 +2902,7 @@ Connected Browser Tabs (${settings.tabs?.length || 0}):
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // Keep stdio completely silent for strict MCP JSON-RPC clients
+  console.error("Mythic Advanced MCP server running on stdio");
 }
 run().catch((error) => {
   console.error(error);

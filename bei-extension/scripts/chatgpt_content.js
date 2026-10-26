@@ -25,6 +25,10 @@
   let silentAudioCtx = null;
   function ensureBackgroundCpuAwake() {
     try {
+      // Chrome Autoplay Policy Guard: Never instantiate or resume AudioContext without user activation
+      if (typeof navigator !== 'undefined' && navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+        return;
+      }
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (AudioContextClass && (!silentAudioCtx || silentAudioCtx.state === 'closed')) {
         silentAudioCtx = new AudioContextClass();
@@ -33,13 +37,24 @@
         gain.gain.value = 0.00001;
         osc.connect(gain);
         gain.connect(silentAudioCtx.destination);
-        osc.start();
+        try {
+          osc.start();
+        } catch (e) {}
         if (silentAudioCtx.state === 'suspended') {
           silentAudioCtx.resume().catch(() => {});
         }
       }
     } catch (e) {}
   }
+
+  // Defer AudioContext background wake until user interaction to comply with Chrome Autoplay policy
+  try {
+    const onUserInteraction = () => {
+      ensureBackgroundCpuAwake();
+    };
+    window.addEventListener('click', onUserInteraction, { capture: true, passive: true, once: true });
+    window.addEventListener('keydown', onUserInteraction, { capture: true, passive: true, once: true });
+  } catch (e) {}
 
   function reportProgress(jobId, step, detail) {
     if (!jobId) return;

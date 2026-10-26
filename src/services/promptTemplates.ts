@@ -1117,4 +1117,52 @@ export const assembleFullMythicPrompt = (params: AssemblePromptParams): Assemble
   };
 };
 
+/**
+ * Builds a vision analysis prompt that decomposes a reference image into individual
+ * props, equipment, garments, and accessories (matching Lychee Studio Props Extraction node).
+ */
+export const buildPropsExtractionPrompt = (
+  granularity: 'minimal' | 'standard' | 'detailed' = 'standard',
+  mergeSymmetrical: boolean = true,
+  includeHeadBody: boolean = false
+): string => {
+  const counts = {
+    minimal: '5 to 7 key macro items',
+    standard: '8 to 10 distinct items',
+    detailed: '12 to 16 detailed items (including trim, secondary clasps, straps, and accessories)'
+  }[granularity] || '8 to 10 distinct items';
+
+  return `You are an expert game art asset director and 2D/3D concept pipeline analyzer (similar to Lychee Studio Props Extraction).
+Carefully analyze the attached character / reference image and deconstruct it into its individual equipment, clothing, accessory, and weapon assets.
+
+EXTRACTION GUIDELINES:
+1. Extract exactly ${counts}.
+2. Symmetrical items: ${mergeSymmetrical ? 'MERGE left and right pairs into a single prop entry (e.g., "Pair of Leather Boots", "Steel Gauntlets").' : 'SEPARATE left and right items if they exhibit distinct asymmetrical features.'}
+3. Head & Anatomy: ${includeHeadBody ? 'INCLUDE head, facial features, hairstyle, and body anatomy as distinct prop/anatomy items.' : 'EXCLUDE basic anatomy and facial features. Focus strictly on removable clothing, armor, belts, jewelry, weapons, footwear, and carried gear.'}
+4. For every extracted prop, provide:
+   - "id": A clean snake_case identifier (e.g., "prop_01_rapier")
+   - "name": Concise descriptive name (e.g., "Duelist's Ornate Rapier")
+   - "category": One of ["weapon", "outerwear", "undergarment", "footwear", "accessory", "headgear", "anatomy", "fx"]
+   - "visual_description": Precise physical description from the image (colors, materials, embroidery, weathering, metal type, gems)
+   - "generation_ready_prompt": An isolated, self-contained text-to-image prompt to synthesize or model this exact single prop on an absolute clean flat white background (#FFFFFF) with high detail and zero characters attached.
+
+OUTPUT FORMAT:
+Respond with a clear character summary, followed by a valid JSON block enclosed in \`\`\`json:
+{
+  "character_summary": "Brief visual summary of character archetype, color palette, and style",
+  "props": [
+    {
+      "id": "prop_01_...",
+      "name": "...",
+      "category": "...",
+      "visual_description": "...",
+      "generation_ready_prompt": "... isolated on flat white background (#FFFFFF), clean high contrast game asset, no characters, solo item"
+    }
+  ]
+}
+
+Also provide a clean, readable Markdown table summarizing all extracted props.`;
+};
+
+
 

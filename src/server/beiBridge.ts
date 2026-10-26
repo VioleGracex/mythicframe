@@ -3,6 +3,52 @@ import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
+import os from 'os';
+
+export function maskEmail(email?: string): string {
+  if (!email || typeof email !== 'string') return 'anonymous';
+  const trimmed = email.trim();
+  const atIdx = trimmed.indexOf('@');
+  if (atIdx === -1) return 'masked';
+  const user = trimmed.slice(0, atIdx);
+  const domain = trimmed.slice(atIdx + 1);
+  const visible = user.slice(0, Math.min(2, user.length));
+  return `${visible}***@${domain}`;
+}
+
+const AUDIT_LOG_DIR = path.join(os.homedir(), 'Documents', 'MythicFrame', 'logs');
+const AUDIT_LOG_FILE = path.join(AUDIT_LOG_DIR, 'bei_session_audit.log');
+
+export function writeSessionAuditLog(entry: {
+  event: string;
+  target?: string;
+  accountSlot?: number | null;
+  email?: string;
+  tabId?: number | null;
+  isBatch?: boolean;
+  jobId?: string;
+  details?: string;
+  data?: Record<string, any>;
+}) {
+  try {
+    if (!fs.existsSync(AUDIT_LOG_DIR)) {
+      fs.mkdirSync(AUDIT_LOG_DIR, { recursive: true });
+    }
+    const timestamp = new Date().toISOString();
+    const masked = entry.email ? maskEmail(entry.email) : undefined;
+    const slotStr = (entry.accountSlot !== undefined && entry.accountSlot !== null) ? `[Slot:${entry.accountSlot}] ` : '';
+    const emailStr = masked ? `[User:${masked}] ` : '';
+    const tabStr = (entry.tabId !== undefined && entry.tabId !== null) ? `[Tab:${entry.tabId}] ` : '';
+    const batchStr = entry.isBatch ? `[Batch:true] ` : '';
+    const jobStr = entry.jobId ? `[Job:${entry.jobId.slice(0, 16)}] ` : '';
+    const detailsStr = entry.details ? entry.details.replace(/[\r\n]+/g, ' ') : '';
+
+    const logLine = `[${timestamp}] [${entry.event}] ${slotStr}${emailStr}${tabStr}${batchStr}${jobStr}${detailsStr}\n`;
+    fs.appendFileSync(AUDIT_LOG_FILE, logLine, 'utf8');
+  } catch (err) {
+    console.warn('[MythicFrame BEI Bridge] Failed to append to session audit log:', err);
+  }
+}
 
 export interface BEITabInfo {
   tabId: number;
@@ -156,7 +202,7 @@ export class BEIBridgeServer {
   private pendingVerifyTabRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private pendingLibraryRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private lastHeartbeat = Date.now();
-  private extensionVersion = '1.5.3';
+  private extensionVersion = '1.5.5';
   private projectDir = process.cwd();
   public latestProgress: Record<string, { step: string; detail: string; timestamp: number }> = {};
   public globalProgress: { step: string; detail: string; timestamp: number } | null = null;
@@ -348,7 +394,7 @@ export class BEIBridgeServer {
 
         const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
-        if (req.method === 'GET' && (url.pathname === '/api/bei/status' || url.pathname === '/status')) {
+        if (req.method === 'GET' && (url.pathname === '/api/bei/status' || url.pathname === '/status' || url.pathname === '/ping')) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(this.getStatus()));
           return;
@@ -580,6 +626,23 @@ export class BEIBridgeServer {
       return;
     }
 
+    if (type === 'AUDIT_LOG') {
+      if (data) {
+        writeSessionAuditLog({
+          event: data.event || 'AUDIT_EVENT',
+          target: data.target,
+          accountSlot: data.accountSlot,
+          email: data.email,
+          tabId: data.tabId,
+          isBatch: Boolean(data.isBatch),
+          jobId: data.jobId,
+          details: data.details,
+          data: data.extra
+        });
+      }
+      return;
+    }
+
     if (type === 'pong') {
       this.lastHeartbeat = Date.now();
       return;
@@ -605,6 +668,11 @@ export class BEIBridgeServer {
       }
       this.syncKnownAccounts(data?.accounts);
       console.log(`[MythicFrame BEI Bridge] Extension registered (${browserName}). Discovered tabs: ${this.knownTabs.length}, Accounts: ${this.knownAccounts.length}`);
+      writeSessionAuditLog({
+        event: 'EXTENSION_CONNECTED',
+        details: `Connected to ${browserName} v${data?.version || ''} (${this.knownTabs.length} tabs, ${this.knownAccounts.length} accounts)`,
+        data: { tabsCount: this.knownTabs.length, accountsCount: this.knownAccounts.length }
+      });
       return;
     }
 
@@ -1035,7 +1103,16 @@ export class BEIBridgeServer {
         );
 
         const jobId = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-        console.log(`[MythicFrame BEI Bridge] Dispatching job ${jobId} to extension (Target: ${target}, Slot: ${accountSlot}, Images: ${images.length}, Timeout: ${effectiveTimeout}s, ChatMode: ${chatSessionMode})`);
+        const hasExplicitSlot = payload.accountSlot !== undefined;
+        console.log(`[MythicFrame BEI Bridge] Dispatching job ${jobId} to extension (Target: ${target}, Slot: ${accountSlot}, Images: ${images.length}, Timeout: ${effectiveTimeout}s, ChatMode: ${chatSessionMode}, Batch: ${payload.dispatchMode === 'multi'})`);
+        writeSessionAuditLog({
+          event: 'PROMPT_DISPATCHED',
+          target,
+          accountSlot: hasExplicitSlot ? accountSlot : undefined,
+          jobId,
+          isBatch: payload.dispatchMode === 'multi',
+          details: `Dispatched image generation job (prompt len: ${prompt.length}, timeout: ${effectiveTimeout}s, batch: ${payload.dispatchMode === 'multi'})`
+        });
 
         const timeoutTimer = setTimeout(() => {
           if (this.pendingJobs.has(jobId)) {
@@ -1050,7 +1127,7 @@ export class BEIBridgeServer {
             jobId,
             target,
             prompt,
-            accountSlot,
+            accountSlot: hasExplicitSlot ? accountSlot : undefined,
             resolve,
             reject,
             timeoutTimer
@@ -1104,7 +1181,7 @@ export class BEIBridgeServer {
             prompt,
             fullPrompt: fullPrompt || prompt,
             aspectRatio,
-            accountSlot,
+            accountSlot: hasExplicitSlot ? accountSlot : undefined,
             timeoutSeconds: effectiveTimeout,
             images,
             tabMode,
@@ -1119,10 +1196,26 @@ export class BEIBridgeServer {
         jobPromise
           .then(result => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
+            writeSessionAuditLog({
+              event: 'PROMPT_COMPLETED',
+              target,
+              accountSlot: result.metadata?.accountSlot ?? accountSlot,
+              jobId,
+              isBatch: payload.dispatchMode === 'multi',
+              details: `Generation completed successfully for job ${jobId}`
+            });
             res.end(JSON.stringify(result));
           })
           .catch(err => {
             const isCancelled = /cancel|abort|stop/i.test(err?.message || '');
+            writeSessionAuditLog({
+              event: isCancelled ? 'PROMPT_CANCELLED' : 'PROMPT_FAILED',
+              target,
+              accountSlot,
+              jobId,
+              isBatch: payload.dispatchMode === 'multi',
+              details: `Generation ${isCancelled ? 'cancelled' : 'failed'} for job ${jobId}: ${err?.message || String(err)}`
+            });
             res.writeHead(isCancelled ? 499 : 500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
               error: isCancelled ? 'BEI_GENERATION_CANCELLED' : 'BEI_GENERATION_FAILED',
@@ -1217,6 +1310,22 @@ export class BEIBridgeServer {
         });
       });
 
+      const processedImages: string[] = [];
+      if (Array.isArray(images)) {
+        for (const img of images) {
+          if (typeof img === 'string') {
+            if (img.startsWith('data:image/')) {
+              processedImages.push(img);
+            } else if (fs.existsSync(img)) {
+              const ext = path.extname(img).toLowerCase();
+              const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+              const b64 = fs.readFileSync(img).toString('base64');
+              processedImages.push(`data:${mime};base64,${b64}`);
+            }
+          }
+        }
+      }
+
       const targetSocket = this.getClientSocket(preferredBrowser || browser) || this.extensionSocket;
       targetSocket!.send(JSON.stringify({
         type: 'EXECUTE_TEXT_PROMPT',
@@ -1225,7 +1334,8 @@ export class BEIBridgeServer {
           target,
           prompt,
           accountSlot,
-          timeoutSeconds
+          timeoutSeconds,
+          images: processedImages
         }
       }));
 
