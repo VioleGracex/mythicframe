@@ -133,6 +133,8 @@ export const getShotDistanceFramingDirective = (framing: CameraFraming | string)
       return `\n[CRITICAL OVERRIDE - FRAMING]: EXTREME LONG SHOT (ELS). Extreme long shot: Character occupies a small part of the image; the vast surrounding environment dominates the composition. Character is small but recognizable. This framing directive supersedes all others.\n`;
     case 'very_wide_shot':
       return `\n[CRITICAL OVERRIDE - FRAMING]: VERY WIDE SHOT (VWS). Very wide shot: Character is shown at a distance within a broad, expansive setting; used for establishing vast scale and environmental grandeur. This framing directive supersedes all others.\n`;
+    case 'seated_desk':
+      return `\n[FRAMING & SPATIAL STAGING]: PULL-BACK WIDE MEDIUM SHOT. The character is sitting in a chair BEHIND a large wooden desk. The desk is placed horizontally across the foreground, between the character and the camera. The character's upper body and hands are visible behind the desk surface. The desk surface is clearly shown with parchment maps, books, and items on it. Camera is pulled back at a comfortable distance showing the room environment and desk in full context.\n`;
     default:
       return `\n[CRITICAL OVERRIDE - FRAMING]: FULL SHOT (FS). You MUST show the entire character from head to toe. This instruction supersedes any other framing instructions.\n`;
   }
@@ -144,32 +146,10 @@ export const getShotDistanceFramingDirective = (framing: CameraFraming | string)
 export const detectPromptFraming = (prompt: string): CameraFraming | null => {
   if (!prompt) return null;
   const p = prompt.toLowerCase();
-  if (/(extreme close[\s-]?up|\becu\b|macro face|eye close[\s-]?up|lips close[\s-]?up)/i.test(p)) {
-    return 'extreme_close_up';
-  }
-  if (/(big close[\s-]?up|\bbcu\b|full face close[\s-]?up)/i.test(p)) {
-    return 'big_close_up';
-  }
-  if (/(medium close[\s-]?up|\bmcu\b)/i.test(p)) {
-    return 'medium_close_up';
-  }
-  if (/(close[\s-]?up|\bcu\b|headshot|head[\s-]?shot|portrait|profile pic|profile picture|avatar|face\b)/i.test(p)) {
-    return 'close_up';
-  }
-  if (/(bust[\s-]?shot|\bbust\b|chest[\s-]?up|upper torso)/i.test(p)) {
-    return 'bust_shot';
-  }
-  if (/(medium[\s-]?long[\s-]?shot|\bmls\b|mid[\s-]?thigh shot)/i.test(p)) {
-    return 'medium_long_shot';
-  }
-  if (/(three[\s-]?quarter[\s-]?shot|\b3\/4\b|knee[\s-]?up)/i.test(p)) {
-    return 'three_quarter_shot';
-  }
-  if (/(american[\s-]?shot|\bas\b|cowboy[\s-]?shot)/i.test(p)) {
-    return 'american_shot';
-  }
-  if (/(waist[\s-]?up|medium shot|\bms\b|half[\s-]?body)/i.test(p)) {
-    return 'medium_shot';
+
+  // Prioritize explicit wide / full shots
+  if (/(full[\s-]?body|full[\s-]?shot|\bfs\b|head to toe|entire character)/i.test(p)) {
+    return 'full_shot';
   }
   if (/(extreme long[\s-]?shot|\bels\b)/i.test(p)) {
     return 'extreme_long_shot';
@@ -180,8 +160,44 @@ export const detectPromptFraming = (prompt: string): CameraFraming | null => {
   if (/(long[\s-]?shot|\bls\b|wide shot)/i.test(p)) {
     return 'long_shot';
   }
-  if (/(full[\s-]?body|full[\s-]?shot|\bfs\b|head to toe|entire character)/i.test(p)) {
-    return 'full_shot';
+  if (/(three[\s-]?quarter[\s-]?shot|\b3\/4\b|knee[\s-]?up)/i.test(p)) {
+    return 'three_quarter_shot';
+  }
+  if (/(american[\s-]?shot|\bas\b|cowboy[\s-]?shot)/i.test(p)) {
+    return 'american_shot';
+  }
+  if (/(medium[\s-]?long[\s-]?shot|\bmls\b|mid[\s-]?thigh shot)/i.test(p)) {
+    return 'medium_long_shot';
+  }
+
+  // Prioritize sitting behind a desk
+  if (/(behind (?:a |the )?desk|behind (?:a |the )?table|sitting behind|seated behind)/i.test(p)) {
+    return 'seated_desk' as any;
+  }
+
+  // Prioritize medium / waist-up / desk / seated shots over close-ups
+  if (/(waist[\s-]?up|medium shot|\bms\b|half[\s-]?body|seated|sitting at (?:a )?desk|sitting at (?:a )?table|\bdesk\b)/i.test(p)) {
+    return 'medium_shot';
+  }
+  if (/(bust[\s-]?shot|\bbust\b|chest[\s-]?up|upper torso)/i.test(p)) {
+    return 'bust_shot';
+  }
+
+  // Close-up variants
+  if (/(extreme close[\s-]?up|\becu\b|macro face|eye close[\s-]?up|lips close[\s-]?up)/i.test(p)) {
+    return 'extreme_close_up';
+  }
+  if (/(big close[\s-]?up|\bbcu\b|full face close[\s-]?up)/i.test(p)) {
+    return 'big_close_up';
+  }
+  if (/(medium close[\s-]?up|\bmcu\b)/i.test(p)) {
+    return 'medium_close_up';
+  }
+  if (/(close[\s-]?up|\bcu\b|headshot|head[\s-]?shot|profile pic|profile picture|avatar)/i.test(p)) {
+    return 'close_up';
+  }
+  if (/\bportrait\b/i.test(p)) {
+    return 'medium_shot';
   }
   return null;
 };
@@ -532,7 +548,7 @@ export const buildIllustrationPrompt = (
   
   if (referenceAssets.length > 0) {
     if (characterLikely) {
-      fullPrompt += `[STRICT CONSTRAINT]: Maintain exact character features, skin color, and ALL accessories from references (wings, tails, horns, weapons, quivers, capes). If the character in the reference has a closed helmet, mask, or obscured face, you MUST maintain that obscured face. Do NOT force eyes or an open helmet if the reference shows a closed one.\n`;
+      fullPrompt += `[STRICT CONSTRAINT]: Maintain exact character features, skin color, and ALL accessories from references (wings, tails, horns, weapons, quivers, capes). If the character in the reference has a closed helmet, mask, or obscured face, you MUST maintain that obscured face. Do NOT force eyes or an open helmet if the reference shows a closed one. Do NOT copy the framing, camera distance, or crop of the reference image; the reference is ONLY for character design, face, costume, and art style. Staging, camera distance, and pose must follow the prompt.\n`;
     } else {
       fullPrompt += `[STRICT CONSTRAINT]: Maintain exact visual design, colors, and style from references.\n`;
     }

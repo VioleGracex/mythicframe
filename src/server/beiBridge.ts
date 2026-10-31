@@ -1076,7 +1076,7 @@ export class BEIBridgeServer {
   public async handleGenerateRequest(req: http.IncomingMessage, res: http.ServerResponse) {
     try {
       const payload = await this.parseRequestBody(req);
-      const { target = 'gemini', prompt, fullPrompt, aspectRatio = '16:9', accountSlot = 0, timeoutSeconds = 120, images = [], tabMode = 'same_window_group', bringTabToFront, chatSessionMode = 'same_chat', tabSessionId, preferredBrowser, browser } = payload;
+      const { target = 'gemini', prompt, fullPrompt, aspectRatio = '16:9', accountSlot = 0, timeoutSeconds = 120, images = [], tabMode = 'same_window_group', bringTabToFront, chatSessionMode = 'new_chat', tabSessionId, preferredBrowser, browser } = payload;
 
       if (!prompt) {
         res.writeHead(400, { 'Content-Type': 'application/json' });

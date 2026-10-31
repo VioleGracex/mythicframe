@@ -1,10 +1,10 @@
 {
   "projectName": "Kingdoms Divided",
   "gameContext": {
-    "setting": "Grim medieval fantasy realm under siege",
-    "tone": "Dark, gritty, tactical, dramatic lighting",
-    "visualConstraints": "Consistent black contour outlines, cel-shaded highlights, no modern tech",
-    "defaultStyleId": "arknights_tactical"
+    "setting": "",
+    "tone": "",
+    "visualConstraints": "",
+    "defaultStyleId": "none"
   },
   "activeArtStyle": {
     "id": "none",

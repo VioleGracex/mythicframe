@@ -808,7 +808,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         images: args.images || [],
         quality: args.quality || 'ultra_original',
         dispatchMode: args.dispatchMode || 'single',
-        chatSessionMode: args.chatSessionMode || 'same_chat',
+        chatSessionMode: args.chatSessionMode || 'new_chat',
         timeoutSeconds: args.timeoutSeconds || 900
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, '/');
@@ -819,14 +819,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
       } catch (e) {}
 
-      const recoveryNotice = beiRes.metadata?.recoveredFromLibrary
-        ? `\n\nAUTOMATIC FAILOVER NOTICE: The browser chat DOM timed out or missed the image stream, but the generated artwork was AUTOMATICALLY RECOVERED from your Google Gemini Library!\n`
-        : '';
-
       return {
         content: [{
           type: "text",
-          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!${recoveryNotice}\nImage saved to: ${beiRes.filePath}${sizeMB}\nJob ID: ${beiRes.jobId}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\n${wantTransparent ? 'Background: Isolated on flat key for transparent cutout\n' : ''}\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
+          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!\nImage saved to: ${beiRes.filePath}${sizeMB}\nJob ID: ${beiRes.jobId}\nQuality: ${args.quality || 'ultra_original'}\nFile Size: ${sizeMB.trim() || 'Unknown'}\n${wantTransparent ? 'Background: Isolated on flat key for transparent cutout\n' : ''}\nPlease embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
         }]
       };
     }

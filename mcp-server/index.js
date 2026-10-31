@@ -404,6 +404,10 @@ var getShotDistanceFramingDirective = (framing) => {
       return `
 [CRITICAL OVERRIDE - FRAMING]: VERY WIDE SHOT (VWS). Very wide shot: Character is shown at a distance within a broad, expansive setting; used for establishing vast scale and environmental grandeur. This framing directive supersedes all others.
 `;
+    case "seated_desk":
+      return `
+[FRAMING & SPATIAL STAGING]: PULL-BACK WIDE MEDIUM SHOT. The character is sitting in a chair BEHIND a large wooden desk. The desk is placed horizontally across the foreground, between the character and the camera. The character's upper body and hands are visible behind the desk surface. The desk surface is clearly shown with parchment maps, books, and items on it. Camera is pulled back at a comfortable distance showing the room environment and desk in full context.
+`;
     default:
       return `
 [CRITICAL OVERRIDE - FRAMING]: FULL SHOT (FS). You MUST show the entire character from head to toe. This instruction supersedes any other framing instructions.
@@ -413,32 +417,8 @@ var getShotDistanceFramingDirective = (framing) => {
 var detectPromptFraming = (prompt) => {
   if (!prompt) return null;
   const p = prompt.toLowerCase();
-  if (/(extreme close[\s-]?up|\becu\b|macro face|eye close[\s-]?up|lips close[\s-]?up)/i.test(p)) {
-    return "extreme_close_up";
-  }
-  if (/(big close[\s-]?up|\bbcu\b|full face close[\s-]?up)/i.test(p)) {
-    return "big_close_up";
-  }
-  if (/(medium close[\s-]?up|\bmcu\b)/i.test(p)) {
-    return "medium_close_up";
-  }
-  if (/(close[\s-]?up|\bcu\b|headshot|head[\s-]?shot|portrait|profile pic|profile picture|avatar|face\b)/i.test(p)) {
-    return "close_up";
-  }
-  if (/(bust[\s-]?shot|\bbust\b|chest[\s-]?up|upper torso)/i.test(p)) {
-    return "bust_shot";
-  }
-  if (/(medium[\s-]?long[\s-]?shot|\bmls\b|mid[\s-]?thigh shot)/i.test(p)) {
-    return "medium_long_shot";
-  }
-  if (/(three[\s-]?quarter[\s-]?shot|\b3\/4\b|knee[\s-]?up)/i.test(p)) {
-    return "three_quarter_shot";
-  }
-  if (/(american[\s-]?shot|\bas\b|cowboy[\s-]?shot)/i.test(p)) {
-    return "american_shot";
-  }
-  if (/(waist[\s-]?up|medium shot|\bms\b|half[\s-]?body)/i.test(p)) {
-    return "medium_shot";
+  if (/(full[\s-]?body|full[\s-]?shot|\bfs\b|head to toe|entire character)/i.test(p)) {
+    return "full_shot";
   }
   if (/(extreme long[\s-]?shot|\bels\b)/i.test(p)) {
     return "extreme_long_shot";
@@ -449,8 +429,38 @@ var detectPromptFraming = (prompt) => {
   if (/(long[\s-]?shot|\bls\b|wide shot)/i.test(p)) {
     return "long_shot";
   }
-  if (/(full[\s-]?body|full[\s-]?shot|\bfs\b|head to toe|entire character)/i.test(p)) {
-    return "full_shot";
+  if (/(three[\s-]?quarter[\s-]?shot|\b3\/4\b|knee[\s-]?up)/i.test(p)) {
+    return "three_quarter_shot";
+  }
+  if (/(american[\s-]?shot|\bas\b|cowboy[\s-]?shot)/i.test(p)) {
+    return "american_shot";
+  }
+  if (/(medium[\s-]?long[\s-]?shot|\bmls\b|mid[\s-]?thigh shot)/i.test(p)) {
+    return "medium_long_shot";
+  }
+  if (/(behind (?:a |the )?desk|behind (?:a |the )?table|sitting behind|seated behind)/i.test(p)) {
+    return "seated_desk";
+  }
+  if (/(waist[\s-]?up|medium shot|\bms\b|half[\s-]?body|seated|sitting at (?:a )?desk|sitting at (?:a )?table|\bdesk\b)/i.test(p)) {
+    return "medium_shot";
+  }
+  if (/(bust[\s-]?shot|\bbust\b|chest[\s-]?up|upper torso)/i.test(p)) {
+    return "bust_shot";
+  }
+  if (/(extreme close[\s-]?up|\becu\b|macro face|eye close[\s-]?up|lips close[\s-]?up)/i.test(p)) {
+    return "extreme_close_up";
+  }
+  if (/(big close[\s-]?up|\bbcu\b|full face close[\s-]?up)/i.test(p)) {
+    return "big_close_up";
+  }
+  if (/(medium close[\s-]?up|\bmcu\b)/i.test(p)) {
+    return "medium_close_up";
+  }
+  if (/(close[\s-]?up|\bcu\b|headshot|head[\s-]?shot|profile pic|profile picture|avatar)/i.test(p)) {
+    return "close_up";
+  }
+  if (/\bportrait\b/i.test(p)) {
+    return "medium_shot";
   }
   return null;
 };
@@ -854,7 +864,7 @@ var buildIllustrationPrompt = (basePrompt, gameContext, styleSnippet, bgConfig, 
 `;
   if (referenceAssets.length > 0) {
     if (characterLikely) {
-      fullPrompt += `[STRICT CONSTRAINT]: Maintain exact character features, skin color, and ALL accessories from references (wings, tails, horns, weapons, quivers, capes). If the character in the reference has a closed helmet, mask, or obscured face, you MUST maintain that obscured face. Do NOT force eyes or an open helmet if the reference shows a closed one.
+      fullPrompt += `[STRICT CONSTRAINT]: Maintain exact character features, skin color, and ALL accessories from references (wings, tails, horns, weapons, quivers, capes). If the character in the reference has a closed helmet, mask, or obscured face, you MUST maintain that obscured face. Do NOT force eyes or an open helmet if the reference shows a closed one. Do NOT copy the framing, camera distance, or crop of the reference image; the reference is ONLY for character design, face, costume, and art style. Staging, camera distance, and pose must follow the prompt.
 `;
     } else {
       fullPrompt += `[STRICT CONSTRAINT]: Maintain exact visual design, colors, and style from references.
@@ -1524,7 +1534,7 @@ async function generateWithBEI(options) {
     bringTabToFront = false,
     quality = "ultra_original",
     dispatchMode = "single",
-    chatSessionMode = "same_chat"
+    chatSessionMode = "new_chat"
   } = options;
   const processedImages = [];
   for (const img of images) {
@@ -1552,7 +1562,6 @@ async function generateWithBEI(options) {
     chatSessionMode
   };
   let result = null;
-  let chatError = null;
   try {
     const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/generate`, {
       method: "POST",
@@ -1568,66 +1577,11 @@ async function generateWithBEI(options) {
       throw new Error(result.error || "BEI bridge did not return a valid image.");
     }
   } catch (err) {
-    chatError = err;
-    console.warn(`[MythicFrame BEI] Chat generation did not catch image: ${err.message}. Initiating Automated Tab Harvest & Failover Protocol...`);
+    console.warn(`[MythicFrame BEI] Generation error: ${err.message}`);
+    throw new Error(`BEI generation failed: ${err.message || err}`);
   }
   if (!result || !result.image) {
-    try {
-      console.log(`[MythicFrame BEI] Attempting active tab verification & DOM harvest on ${target} slot ${accountSlot}...`);
-      const verifyRes = await switchAndVerifyBEITab(target, accountSlot);
-      if (verifyRes.success && verifyRes.data?.hasImage && verifyRes.data?.image) {
-        const harvested = verifyRes.data.image;
-        const imgPayload = harvested.base64 || harvested.highResUrl || harvested.src;
-        if (imgPayload) {
-          console.log(`[MythicFrame BEI] Successfully harvested rendered image from active tab!`);
-          result = {
-            success: true,
-            image: imgPayload,
-            jobId: `harvested_${Date.now()}`,
-            metadata: {
-              recoveredViaTabVerify: true,
-              alt: harvested.alt || "",
-              url: verifyRes.data.url
-            }
-          };
-        }
-      }
-    } catch (verifyErr) {
-      console.warn(`[MythicFrame BEI] Tab verify & harvest notice: ${verifyErr.message}`);
-    }
-  }
-  if (!result || !result.image) {
-    if (target === "gemini") {
-      try {
-        console.log(`[MythicFrame BEI] Querying Google Gemini Library (Slot ${accountSlot}) for recent generation fallback...`);
-        const libRes = await fetchBEILibraryAssets("gemini", accountSlot, 6);
-        if (libRes.success && Array.isArray(libRes.assets) && libRes.assets.length > 0) {
-          const latestAsset = libRes.assets[0];
-          const assetUrl = latestAsset.highResUrl || latestAsset.src;
-          if (assetUrl) {
-            console.log(`[MythicFrame BEI] Automatically recovered image from Google Gemini Library: ${assetUrl}`);
-            const saved = await saveLibraryAssetToFile(assetUrl, "bei_library_failover");
-            if (saved) {
-              return {
-                success: true,
-                filePath: saved.filePath,
-                imageBase64: saved.base64,
-                jobId: `recovered_lib_${Date.now()}`,
-                metadata: {
-                  recoveredFromLibrary: true,
-                  sourceUrl: assetUrl,
-                  alt: latestAsset.alt || "",
-                  originalError: chatError ? chatError.message : "Chat timeout"
-                }
-              };
-            }
-          }
-        }
-      } catch (failoverErr) {
-        console.warn(`[MythicFrame BEI] Library failover encountered error: ${failoverErr.message}`);
-      }
-    }
-    throw new Error(chatError ? chatError.message : "BEI generation failed and Library failover could not recover any generated assets.");
+    throw new Error("BEI generation failed to produce a valid image for this job.");
   }
   const outDir = path.join(PROJECT_ROOT, "outputs", "bei");
   if (!fs.existsSync(outDir)) {
@@ -2508,7 +2462,7 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
         images: args.images || [],
         quality: args.quality || "ultra_original",
         dispatchMode: args.dispatchMode || "single",
-        chatSessionMode: args.chatSessionMode || "same_chat",
+        chatSessionMode: args.chatSessionMode || "new_chat",
         timeoutSeconds: args.timeoutSeconds || 900
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, "/");
@@ -2519,14 +2473,10 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
         sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
       } catch (e) {
       }
-      const recoveryNotice = beiRes.metadata?.recoveredFromLibrary ? `
-
-AUTOMATIC FAILOVER NOTICE: The browser chat DOM timed out or missed the image stream, but the generated artwork was AUTOMATICALLY RECOVERED from your Google Gemini Library!
-` : "";
       return {
         content: [{
           type: "text",
-          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!${recoveryNotice}
+          text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!
 Image saved to: ${beiRes.filePath}${sizeMB}
 Job ID: ${beiRes.jobId}
 Quality: ${args.quality || "ultra_original"}

@@ -540,32 +540,33 @@
           reportProgress(jobId, 'generating', `ChatGPT is generating image... (${Math.round(elapsed/1000)}s)`);
         }
 
-      // 1. Check for newly generated images
-      const allImages = protocol.getAllImagesRecursively(document.body);
-      for (const img of allImages) {
-        const src = img.currentSrc || img.src;
-        if (!src || existingImages.has(src)) continue;
-
-        const isDallE = (img.alt || '').toLowerCase().includes('dall-e') ||
-                        (img.alt || '').toLowerCase().includes('generated') ||
-                        src.includes('oaidalleapiprodscus') ||
-                        src.includes('files.oaiusercontent.com') ||
-                        src.includes('backend-api/files');
-
-        if ((isDallE || protocol.isGeneratedImage(img)) && img.complete && (img.naturalWidth > 80 || img.naturalHeight > 80)) {
-          await deliverImage(img, img.naturalWidth, img.naturalHeight);
-          return;
-        }
-      }
-
-      // 2. Cancellation, Refusal and Quota / Rate Limit Detection
+      // 1. Check for newly generated images strictly within new assistant turns
       const allCurrentMessages = Array.from(
         document.querySelectorAll('[data-message-author-role="assistant"], div.agent-turn, div[class*="assistant"], article')
       );
       const newMessages = allCurrentMessages.filter(m => !existingMessages.has(m));
-      const targetMessage = newMessages.length > 0 
-        ? newMessages[newMessages.length - 1] 
-        : (allCurrentMessages.length > existingMessages.size ? allCurrentMessages[allCurrentMessages.length - 1] : allCurrentMessages[allCurrentMessages.length - 1]);
+
+      for (const msg of newMessages) {
+        const msgImages = protocol.getAllImagesRecursively(msg);
+        for (const img of msgImages) {
+          const src = img.currentSrc || img.src;
+          if (!src || existingImages.has(src)) continue;
+
+          const isDallE = (img.alt || '').toLowerCase().includes('dall-e') ||
+                          (img.alt || '').toLowerCase().includes('generated') ||
+                          src.includes('oaidalleapiprodscus') ||
+                          src.includes('files.oaiusercontent.com') ||
+                          src.includes('backend-api/files');
+
+          if ((isDallE || protocol.isGeneratedImage(img)) && img.complete && (img.naturalWidth > 80 || img.naturalHeight > 80)) {
+            await deliverImage(img, img.naturalWidth, img.naturalHeight);
+            return;
+          }
+        }
+      }
+
+      // 2. Cancellation, Refusal and Quota / Rate Limit Detection
+      const targetMessage = newMessages.length > 0 ? newMessages[newMessages.length - 1] : null;
 
       if (targetMessage) {
         const text = (targetMessage.innerText || targetMessage.textContent || '').trim();

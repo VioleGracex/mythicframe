@@ -462,7 +462,7 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     bringTabToFront = false,
     quality = 'ultra_original',
     dispatchMode = 'single',
-    chatSessionMode = 'same_chat'
+    chatSessionMode = 'new_chat'
   } = options;
 
   // Process reference images (convert local file paths to base64 data URIs if necessary)
@@ -494,7 +494,6 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
   };
 
   let result: any = null;
-  let chatError: any = null;
 
   try {
     const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/bei/generate`, {
@@ -513,74 +512,12 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
       throw new Error(result.error || 'BEI bridge did not return a valid image.');
     }
   } catch (err: any) {
-    chatError = err;
-    console.warn(`[MythicFrame BEI] Chat generation did not catch image: ${err.message}. Initiating Automated Tab Harvest & Failover Protocol...`);
+    console.warn(`[MythicFrame BEI] Generation error: ${err.message}`);
+    throw new Error(`BEI generation failed: ${err.message || err}`);
   }
 
-  // --- AUTOMATED TAB VERIFY & HARVEST PROTOCOL ---
-  // If BEI chat generation timed out or failed to catch image in DOM:
-  // 1. Force-activate the tab, focus window to wake up throttled DOM timers, and query DOM for finished image!
   if (!result || !result.image) {
-    try {
-      console.log(`[MythicFrame BEI] Attempting active tab verification & DOM harvest on ${target} slot ${accountSlot}...`);
-      const verifyRes = await switchAndVerifyBEITab(target, accountSlot);
-      if (verifyRes.success && verifyRes.data?.hasImage && verifyRes.data?.image) {
-        const harvested = verifyRes.data.image;
-        const imgPayload = harvested.base64 || harvested.highResUrl || harvested.src;
-        if (imgPayload) {
-          console.log(`[MythicFrame BEI] Successfully harvested rendered image from active tab!`);
-          result = {
-            success: true,
-            image: imgPayload,
-            jobId: `harvested_${Date.now()}`,
-            metadata: {
-              recoveredViaTabVerify: true,
-              alt: harvested.alt || '',
-              url: verifyRes.data.url
-            }
-          };
-        }
-      }
-    } catch (verifyErr: any) {
-      console.warn(`[MythicFrame BEI] Tab verify & harvest notice: ${verifyErr.message}`);
-    }
-  }
-
-  // --- AUTOMATED LIBRARY FAILOVER PROTOCOL ---
-  // If active tab verification was empty, query Google Gemini Library (/library) as secondary recovery
-  if (!result || !result.image) {
-    if (target === 'gemini') {
-      try {
-        console.log(`[MythicFrame BEI] Querying Google Gemini Library (Slot ${accountSlot}) for recent generation fallback...`);
-        const libRes = await fetchBEILibraryAssets('gemini', accountSlot, 6);
-        if (libRes.success && Array.isArray(libRes.assets) && libRes.assets.length > 0) {
-          const latestAsset = libRes.assets[0];
-          const assetUrl = latestAsset.highResUrl || latestAsset.src;
-          if (assetUrl) {
-            console.log(`[MythicFrame BEI] Automatically recovered image from Google Gemini Library: ${assetUrl}`);
-            const saved = await saveLibraryAssetToFile(assetUrl, 'bei_library_failover');
-            if (saved) {
-              return {
-                success: true,
-                filePath: saved.filePath,
-                imageBase64: saved.base64,
-                jobId: `recovered_lib_${Date.now()}`,
-                metadata: {
-                  recoveredFromLibrary: true,
-                  sourceUrl: assetUrl,
-                  alt: latestAsset.alt || '',
-                  originalError: chatError ? chatError.message : 'Chat timeout'
-                }
-              };
-            }
-          }
-        }
-      } catch (failoverErr: any) {
-        console.warn(`[MythicFrame BEI] Library failover encountered error: ${failoverErr.message}`);
-      }
-    }
-
-    throw new Error(chatError ? chatError.message : 'BEI generation failed and Library failover could not recover any generated assets.');
+    throw new Error('BEI generation failed to produce a valid image for this job.');
   }
 
   // Save generated image to local disk in outputs/bei

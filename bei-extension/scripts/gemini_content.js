@@ -317,6 +317,25 @@
     }
   }
 
+  function isUserAttachedImage(img) {
+    if (!img) return false;
+    // STRICT FILTER: NEVER grab images inside user query, prompt bubble, attachment containers, or composer
+    if (img.closest('user-query, .user-query-container, .user-query, rich-textarea, .attachment, mat-chip, [data-test-id*="user"], .user-message, .input-area, .chat-input-container, form, gem-composer')) {
+      return true;
+    }
+    return false;
+  }
+
+  function isModelResponseGenerating(node) {
+    if (!node) return false;
+    if (getStopButton()) return true;
+    const progress = node.querySelector('.loading, .shimmer, mat-progress-bar, mat-progress-spinner, .progress-bar, [role="progressbar"]');
+    if (progress && progress.offsetParent !== null) {
+      return true;
+    }
+    return false;
+  }
+
   let activeRunningJobId = null;
   let activeCancelHandler = null;
 
@@ -1857,25 +1876,6 @@
       } catch (err) {}
     };
 
-    function isUserAttachedImage(img) {
-      if (!img) return false;
-      // STRICT FILTER: NEVER grab images inside user query, prompt bubble, attachment containers, or composer
-      if (img.closest('user-query, .user-query-container, .user-query, rich-textarea, .attachment, mat-chip, [data-test-id*="user"], .user-message, .input-area, .chat-input-container, form, gem-composer')) {
-        return true;
-      }
-      return false;
-    }
-
-    function isModelResponseGenerating(node) {
-      if (!node) return false;
-      if (getStopButton()) return true;
-      const progress = node.querySelector('.loading, .shimmer, mat-progress-bar, mat-progress-spinner, .progress-bar, [role="progressbar"]');
-      if (progress && progress.offsetParent !== null) {
-        return true;
-      }
-      return false;
-    }
-
     const checkInterval = setInterval(async () => {
       try {
         if (imageDelivered || jobCancelled) {
@@ -1905,22 +1905,22 @@
           const allTurns = Array.from(document.querySelectorAll('conversation-turn, model-response, [data-test-id*="model-response"]'))
             .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
 
-          // Inspect latest turn or turns created since baseline
-          const candidateTurns = allTurns.slice(baselineResponseCount > 0 ? baselineResponseCount - 1 : 0);
+          // Inspect ONLY turns created strictly after baseline
+          const candidateTurns = allTurns.slice(baselineResponseCount);
           for (const turn of candidateTurns.reverse()) {
             const turnImgs = protocol.getAllImagesRecursively(turn);
             for (const cImg of turnImgs) {
               if (isUserAttachedImage(cImg)) continue;
               const cSrc = cImg.currentSrc || cImg.src;
               if (cSrc && (protocol.isGeneratedImage(cImg) || cSrc.includes('googleusercontent.com'))) {
-                console.log(`[MythicFrame BEI] Caught generated image during pre-timeout deep sweep (Conv ID: ${finalConvId})!`);
+                console.log(`[MythicFrame BEI] Caught generated image during pre-timeout sweep (Job: ${jobId}, Conv ID: ${finalConvId})!`);
                 await deliverImage(cImg, cImg.naturalWidth || 1024, cImg.naturalHeight || 1024);
                 return;
               }
             }
             const turnUrls = protocol.extractImageUrlsFromNode(turn);
             if (turnUrls && turnUrls.length > 0) {
-              console.log(`[MythicFrame BEI] Caught generated image URL during pre-timeout deep sweep (Conv ID: ${finalConvId})!`);
+              console.log(`[MythicFrame BEI] Caught generated image URL during pre-timeout sweep (Job: ${jobId}, Conv ID: ${finalConvId})!`);
               await deliverImage(turnUrls[0]);
               return;
             }
@@ -1952,13 +1952,13 @@
           return;
         }
 
-        // Tier 1: Check ONLY model responses created for this turn (excluding user turns!)
+        // Tier 1: Check ONLY model responses created for this turn (strictly > baselineResponseCount)
         const currentModelResponses = Array.from(document.querySelectorAll('model-response, [data-test-id*="model-response"]'))
           .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
 
         const latestResponse = currentModelResponses.length > baselineResponseCount
           ? currentModelResponses[currentModelResponses.length - 1]
-          : (currentModelResponses.length > 0 ? currentModelResponses[currentModelResponses.length - 1] : null);
+          : null;
 
         if (latestResponse) {
           // 1A: First, check if latest model response already has a completed generated image
@@ -2013,8 +2013,9 @@
           }
         }
 
-        // Tier 2: Check all new images ONLY inside any completed model-response container
-        for (const modelResp of currentModelResponses) {
+        // Tier 2: Check all new images ONLY inside newly created model-response containers
+        const newModelResponses = currentModelResponses.slice(baselineResponseCount);
+        for (const modelResp of newModelResponses) {
           if (isModelResponseGenerating(modelResp)) continue;
           const imagesInModel = protocol.getAllImagesRecursively(modelResp);
           for (const img of imagesInModel) {
@@ -2033,31 +2034,12 @@
           }
         }
 
-        // Tier 3: Broad document fallback for generated image in modern Gemini turns
-        const allDocImages = protocol.getAllImagesRecursively(document.body);
-        for (const img of allDocImages) {
-          if (isUserAttachedImage(img)) continue;
-          const src = img.currentSrc || img.src;
-          if (!src || existingImages.has(src)) continue;
-
-          if (protocol.isGeneratedImage(img)) {
-            const hasDimension = (img.naturalWidth > 120 || img.naturalHeight > 120);
-            const isDirectCdnOrBlob = src && (src.includes('googleusercontent.com') || src.startsWith('blob:') || src.startsWith('data:image/'));
-            if (hasDimension || isDirectCdnOrBlob || img.complete) {
-              await deliverImage(img, img.naturalWidth || 1024, img.naturalHeight || 1024);
-              return;
-            }
-          }
-        }
-
-        // Tier 4: Cancellation, Refusal & Quota / Rate Limit Detection
+        // Tier 3: Cancellation, Refusal & Quota / Rate Limit Detection
         const allCurrentResponses = Array.from(
           document.querySelectorAll('model-response, message-content, div.response-container, [data-test-id*="response"]')
         ).filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
         const newResponses = allCurrentResponses.filter(r => !existingResponses.has(r));
-        const targetResponse = newResponses.length > 0 
-          ? newResponses[newResponses.length - 1] 
-          : (allCurrentResponses.length > existingResponses.size ? allCurrentResponses[allCurrentResponses.length - 1] : null);
+        const targetResponse = newResponses.length > 0 ? newResponses[newResponses.length - 1] : null;
 
         if (targetResponse) {
           const respText = (targetResponse.innerText || targetResponse.textContent || '').trim();
@@ -2513,26 +2495,35 @@
           const hasProgressBar = Boolean(document.querySelector('.loading, .shimmer, mat-progress-bar, mat-progress-spinner, [role="progressbar"]'));
           const isGenerating = Boolean(stopBtn || hasProgressBar);
 
-          // Find generated images in latest turns or overall document
-          const imgs = protocol.getAllImagesRecursively ? protocol.getAllImagesRecursively(document.body) : Array.from(document.querySelectorAll('img'));
+          // Strict provenance: Only harvest if there is an active job running on this tab!
           const candidates = [];
-          for (let i = imgs.length - 1; i >= 0; i--) {
-            const img = imgs[i];
-            const src = img.src || img.getAttribute('data-src') || '';
-            if (!src) continue;
-            if (src.includes('/a/') || src.includes('=s32') || src.includes('=s64') || src.includes('=s96')) continue;
-            if (protocol.isGeneratedImage && protocol.isGeneratedImage(img)) {
-              const highResUrl = protocol.getHighResImageUrl ? protocol.getHighResImageUrl(src) : src;
-              const base64 = protocol.imageToBase64 ? await protocol.imageToBase64(img).catch(() => null) : null;
-              candidates.push({
-                src,
-                highResUrl,
-                base64: base64 || src,
-                alt: img.alt || img.getAttribute('aria-label') || '',
-                width: img.naturalWidth || 1024,
-                height: img.naturalHeight || 1024
-              });
-              break; // Take the latest generated image
+          if (activeRunningJobId) {
+            const modelResponses = Array.from(document.querySelectorAll('model-response, [data-test-id*="model-response"]'))
+              .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
+            if (modelResponses.length > 0) {
+              const latestTurn = modelResponses[modelResponses.length - 1];
+              const imgs = protocol.getAllImagesRecursively ? protocol.getAllImagesRecursively(latestTurn) : Array.from(latestTurn.querySelectorAll('img'));
+              for (let i = imgs.length - 1; i >= 0; i--) {
+                const img = imgs[i];
+                if (isUserAttachedImage(img)) continue;
+                const src = img.src || img.getAttribute('data-src') || '';
+                if (!src) continue;
+                if (src.includes('/a/') || src.includes('=s32') || src.includes('=s64') || src.includes('=s96')) continue;
+                if (protocol.isGeneratedImage && protocol.isGeneratedImage(img)) {
+                  const highResUrl = protocol.getHighResImageUrl ? protocol.getHighResImageUrl(src) : src;
+                  const base64 = protocol.imageToBase64 ? await protocol.imageToBase64(img).catch(() => null) : null;
+                  candidates.push({
+                    src,
+                    highResUrl,
+                    base64: base64 || src,
+                    alt: img.alt || img.getAttribute('aria-label') || '',
+                    width: img.naturalWidth || 1024,
+                    height: img.naturalHeight || 1024,
+                    jobId: activeRunningJobId
+                  });
+                  break; // Take the latest generated image from active turn
+                }
+              }
             }
           }
 

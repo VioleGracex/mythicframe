@@ -36,6 +36,7 @@ let ws = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
 const activeJobs = new Map(); // jobId -> { tabId, target, prompt, accountSlot }
+const busyTabs = new Set(); // tabId -> boolean (strictly locked while job is running)
 const slotQueues = new Map(); // slotKey -> Array<jobData>
 const tabEmailsCache = new Map(); // tabId -> email string
 const knownGoogleAccounts = new Map(); // slot -> { slot, email, name }
@@ -44,6 +45,14 @@ const pendingFullSizeCaptures = new Map(); // jobId -> { resolve, timer } for na
 let lastGeminiDownloadId = null;           // most recent Gemini image download observed while a capture was armed
 let lastGeminiDownloadAt = 0;
 const removeWhenComplete = new Set();      // download ids to delete from disk once they finish
+
+function lockTab(tabId) {
+  if (tabId) busyTabs.add(tabId);
+}
+
+function releaseTab(tabId) {
+  if (tabId) busyTabs.delete(tabId);
+}
 
 function maskEmail(email) {
   if (!email || typeof email !== 'string') return 'anonymous';
@@ -910,7 +919,7 @@ async function waitForTabReady(tabId, timeoutMs = 20000) {
  * Deduplicates strictly: checks "MythicFrame BEI" tab group first, all open tabs second.
  * Reuses existing tabs to 100% eliminate duplicate tabs in the browser.
  */
-async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null, dispatchMode = 'single') {
+async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'new_chat', tabSessionId = null, dispatchMode = 'single') {
   const targetSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
   const lockKey = `${target}:${targetSlot}`;
 
@@ -949,24 +958,25 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
         return getSlotFromUrl(u) === targetSlot;
       };
 
+      const isCleanComposerTab = (t) => {
+        const u = (t.url || t.pendingUrl || '').toLowerCase();
+        return /^https?:\/\/gemini\.google\.com(?:\/u\/\d+)?\/app(?:\?.*)?$/i.test(u) ||
+               /^https?:\/\/gemini\.google\.com(?:\/u\/\d+)?\/?$/i.test(u);
+      };
+
       const allGeminiTabs = allTabs.filter(t => (t.url || t.pendingUrl || '').toLowerCase().includes("gemini.google.com"));
+      // Strict Concurrency & Multi-AI Guard: Never reuse a tab locked by an active in-flight job!
+      const availableGeminiTabs = allGeminiTabs.filter(t => !busyTabs.has(t.id));
 
-      // 1. Prioritize tabs already matching targetSlot (preferring composer /app)
-      let matchedTab = allGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t) && (t.url || '').includes('/app')) ||
-                       allGeminiTabs.find(t => isSlotMatch(t) && (t.url || '').includes('/app')) ||
-                       allGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t)) ||
-                       allGeminiTabs.find(t => isSlotMatch(t));
-
-      // 2. In single mode (non-batch), if no exact slot match, REUSE ANY open Gemini tab!
-      if (!matchedTab && dispatchMode !== 'multi' && allGeminiTabs.length > 0) {
-        matchedTab = allGeminiTabs.find(t => beiGroupTabIds.has(t.id) && (t.url || '').includes('/app')) ||
-                     allGeminiTabs.find(t => (t.url || '').includes('/app')) ||
-                     allGeminiTabs.find(t => beiGroupTabIds.has(t.id)) ||
-                     allGeminiTabs[0];
-        if (matchedTab) {
-          const adoptedSlot = getSlotFromUrl(matchedTab.url || matchedTab.pendingUrl);
-          console.log(`[MythicFrame BEI] Slot ${targetSlot} requested, but found existing Gemini tab ${matchedTab.id} on slot ${adoptedSlot}. Reusing tab to prevent duplicate tab creation.`);
-        }
+      let matchedTab = null;
+      if (chatSessionMode === 'same_chat') {
+        // Explicit same_chat requested: reuse existing matching tab in BEI group or slot
+        matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t)) ||
+                     availableGeminiTabs.find(t => isSlotMatch(t));
+      } else {
+        // new_chat (default): ONLY reuse if an idle tab is already sitting at clean base /app without active chat history
+        matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t) && isCleanComposerTab(t)) ||
+                     availableGeminiTabs.find(t => isSlotMatch(t) && isCleanComposerTab(t));
       }
 
       if (matchedTab && matchedTab.id) {
@@ -974,22 +984,7 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
         const actualSlot = getSlotFromUrl(currentUrl);
         const email = await extractTabEmail(matchedTab.id, "gemini", actualSlot);
 
-        // Deduplicate: Clean up redundant duplicate tabs opened for this exact account slot
-        const duplicateTabs = allGeminiTabs.filter(t => t.id !== matchedTab.id && getSlotFromUrl(t.url || t.pendingUrl) === actualSlot);
-        for (const dup of duplicateTabs) {
-          console.log(`[MythicFrame BEI] Closing redundant duplicate Gemini tab ${dup.id} for slot ${actualSlot}...`);
-          try {
-            await chrome.tabs.remove(dup.id);
-            emitAuditLog('TAB_CLOSED', `Deduplicated redundant Gemini tab ${dup.id} for slot ${actualSlot}`, {
-              tabId: dup.id,
-              accountSlot: actualSlot,
-              email: maskEmail(tabEmailsCache.get(dup.id) || email),
-              reason: 'tab_deduplication'
-            });
-          } catch (e) {}
-        }
-
-        console.log(`[MythicFrame BEI] Reusing existing Gemini tab ${matchedTab.id} for slot ${actualSlot} (In BEI Group: ${beiGroupTabIds.has(matchedTab.id)}).`);
+        console.log(`[MythicFrame BEI] Reusing idle Gemini tab ${matchedTab.id} for slot ${actualSlot} (In BEI Group: ${beiGroupTabIds.has(matchedTab.id)}).`);
         emitAuditLog('TAB_REUSED', `Reusing Gemini tab ${matchedTab.id} on slot ${actualSlot}`, {
           tabId: matchedTab.id,
           target: 'gemini',
@@ -1011,7 +1006,7 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
         }
 
         const isInApp = currentUrl.includes('/app');
-        if (chatSessionMode === 'new_chat') {
+        if (chatSessionMode === 'new_chat' && !isCleanComposerTab(matchedTab)) {
           console.log(`[MythicFrame BEI] 'new_chat' requested: Navigating tab ${matchedTab.id} to clean /u/${actualSlot}/app...`);
           try {
             await chrome.tabs.update(matchedTab.id, { url: `https://gemini.google.com/u/${actualSlot}/app` });
@@ -1037,7 +1032,6 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
           console.log(`[MythicFrame BEI] Reusing active chat thread on tab ${matchedTab.id} (${currentUrl}) without reloading.`);
         }
 
-        // Anti-throttling: ensure tab is active in its window during execution so Chromium doesn't throttle DOM timers
         try {
           await chrome.tabs.update(matchedTab.id, { active: true });
         } catch (e) {}
@@ -1046,8 +1040,8 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
         return matchedTab.id;
       }
 
-      // 3. Open a single new tab (in batch mode, allows 1 tab per distinct email account)
-      console.log(`[MythicFrame BEI Worker] Opening single tab for Gemini slot ${targetSlot} (Mode: ${tabMode}, Focus: ${bringTabToFront}, Batch: ${dispatchMode === 'multi'})...`);
+      // No idle clean matching tab available: Open a dedicated tab strictly for this task!
+      console.log(`[MythicFrame BEI Worker] Opening dedicated tab for Gemini slot ${targetSlot} (Mode: ${tabMode}, Focus: ${bringTabToFront}, Batch: ${dispatchMode === 'multi'}, ChatMode: ${chatSessionMode})...`);
       const newTabProps = {
         url: `https://gemini.google.com/u/${targetSlot}/app`,
         active: Boolean(bringTabToFront)
@@ -1098,21 +1092,26 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
     }
 
     if (target === "chatgpt") {
-      let matchedTab = allTabs.find(t => {
-        if (!beiGroupTabIds.has(t.id)) return false;
+      const isCleanChatGptTab = (t) => {
         const u = (t.url || t.pendingUrl || '').toLowerCase();
-        return u.includes("chatgpt.com");
+        return /^https?:\/\/(?:chatgpt\.com|chat\.openai\.com)\/?(?:\?.*)?$/i.test(u);
+      };
+
+      const availableChatGptTabs = allTabs.filter(t => {
+        const u = (t.url || t.pendingUrl || '').toLowerCase();
+        return (u.includes("chatgpt.com") || u.includes("chat.openai.com")) && !busyTabs.has(t.id);
       });
 
-      if (!matchedTab) {
-        matchedTab = allTabs.find(t => {
-          const u = (t.url || t.pendingUrl || '').toLowerCase();
-          return u.includes("chatgpt.com");
-        });
+      let matchedTab = null;
+      if (chatSessionMode === 'same_chat') {
+        matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id)) || availableChatGptTabs[0];
+      } else {
+        matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id) && isCleanChatGptTab(t)) ||
+                     availableChatGptTabs.find(t => isCleanChatGptTab(t));
       }
 
       if (matchedTab && matchedTab.id) {
-        console.log(`[MythicFrame BEI] Reusing existing ChatGPT tab ${matchedTab.id}.`);
+        console.log(`[MythicFrame BEI] Reusing idle ChatGPT tab ${matchedTab.id}.`);
         await organizeTabIntoBEIGroup(matchedTab.id, tabMode, bringTabToFront);
         if (matchedTab.discarded) {
           try {
@@ -1124,7 +1123,7 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
         return matchedTab.id;
       }
 
-      console.log(`[MythicFrame BEI Worker] Opening single tab for ChatGPT (Mode: ${tabMode}, Focus: ${bringTabToFront})...`);
+      console.log(`[MythicFrame BEI Worker] Opening dedicated tab for ChatGPT (Mode: ${tabMode}, Focus: ${bringTabToFront})...`);
       const newChatTabProps = {
         url: "https://chatgpt.com/",
         active: Boolean(bringTabToFront)
@@ -1268,13 +1267,14 @@ function isSlotBusy(target, slot) {
 }
 
 async function startJob(jobData) {
-  const { jobId, target, prompt, fullPrompt, aspectRatio = (storedDefaultAspectRatio || '1:1'), modelQuality = (storedDefaultModelQuality || 'auto'), accountSlot = 0, timeoutSeconds, images = [], tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null, quality = 'ultra_original' } = jobData;
+  const { jobId, target, prompt, fullPrompt, aspectRatio = (storedDefaultAspectRatio || '1:1'), modelQuality = (storedDefaultModelQuality || 'auto'), accountSlot = 0, timeoutSeconds, images = [], tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'new_chat', tabSessionId = null, quality = 'ultra_original' } = jobData;
   const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
   const tabId = await findOrCreateTab(target, parsedSlot, tabMode, bringTabToFront, chatSessionMode, tabSessionId, jobData.dispatchMode || 'single');
   if (!tabId) {
     throw new Error(`No available browser tab found or created for target: ${target} (slot: ${parsedSlot})`);
   }
 
+  lockTab(tabId);
   activeJobs.set(jobId, { tabId, target, prompt, fullPrompt, accountSlot: parsedSlot, aspectRatio, modelQuality, submitted: false, dispatchMode: jobData.dispatchMode || 'single' });
   emitAuditLog("PROMPT_DISPATCHED", `Dispatched prompt to ${target} tab ${tabId} (slot ${parsedSlot}, batch: ${jobData.dispatchMode === 'multi'})`, {
     jobId,
@@ -1322,6 +1322,8 @@ async function processNextInQueue(target, slot) {
     try {
       await startJob(nextJob);
     } catch (err) {
+      const job = activeJobs.get(nextJob.jobId);
+      if (job && job.tabId) releaseTab(job.tabId);
       activeJobs.delete(nextJob.jobId);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -1532,7 +1534,7 @@ async function handleBridgeCommand(msg) {
   }
 
   if (type === "EXECUTE_PROMPT") {
-    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot = 0, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'temporary_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single' } = data;
+    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot = 0, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'new_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single' } = data;
     let parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
 
     // Multi-Account Mode: Route to an idle account slot when multi mode is active and current slot is busy
@@ -1563,7 +1565,7 @@ async function handleBridgeCommand(msg) {
         slotQueues.set(slotKey, []);
       }
       const queue = slotQueues.get(slotKey);
-      if (queue.length >= 8) {
+      if (queue.length >= 16) {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: "GENERATION_FAILED",
@@ -1582,6 +1584,8 @@ async function handleBridgeCommand(msg) {
     try {
       await startJob({ jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot: parsedSlot, timeoutSeconds, images, tabMode, bringTabToFront, chatSessionMode, tabSessionId, quality, dispatchMode });
     } catch (err) {
+      const job = activeJobs.get(jobId);
+      if (job && job.tabId) releaseTab(job.tabId);
       activeJobs.delete(jobId);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -1668,6 +1672,7 @@ async function handleBridgeCommand(msg) {
       }
       if (activeJobs.has(jobId)) {
         const job = activeJobs.get(jobId);
+        if (job && job.tabId) releaseTab(job.tabId);
         activeJobs.delete(jobId);
         try {
           chrome.tabs.sendMessage(job.tabId, { action: "CANCEL_GENERATION", data: { jobId } });
@@ -1688,6 +1693,7 @@ async function handleBridgeCommand(msg) {
     } else {
       // Cancel all
       slotQueues.clear();
+      busyTabs.clear();
       for (const [id, job] of activeJobs.entries()) {
         try {
           chrome.tabs.sendMessage(job.tabId, { action: "CANCEL_GENERATION", data: { jobId: id } });
@@ -1918,6 +1924,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GENERATION_COMPLETED") {
     let { jobId, image, target, metadata } = message.data;
     const job = activeJobs.get(jobId);
+    if (job && job.tabId) releaseTab(job.tabId);
     const jobTarget = job?.target || target;
     const jobSlot = job?.accountSlot ?? 0;
     activeJobs.delete(jobId);
@@ -1977,6 +1984,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "TEXT_COMPLETED") {
     const { jobId, text, target } = message.data || {};
+    const job = activeJobs.get(jobId);
+    if (job && job.tabId) releaseTab(job.tabId);
     activeJobs.delete(jobId);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
@@ -1994,6 +2003,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "TEXT_FAILED") {
     const { jobId, error } = message.data || {};
+    const job = activeJobs.get(jobId);
+    if (job && job.tabId) releaseTab(job.tabId);
     activeJobs.delete(jobId);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
@@ -2011,6 +2022,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GENERATION_FAILED") {
     const { jobId, error } = message.data;
     const job = activeJobs.get(jobId);
+    if (job && job.tabId) releaseTab(job.tabId);
     const jobTarget = job?.target;
     const jobSlot = job?.accountSlot ?? 0;
     activeJobs.delete(jobId);
@@ -2058,6 +2070,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GENERATION_CANCELLED") {
     const { jobId, reason } = message.data || {};
     const job = activeJobs.get(jobId);
+    if (job && job.tabId) releaseTab(job.tabId);
     const jobTarget = job?.target;
     const jobSlot = job?.accountSlot ?? 0;
     activeJobs.delete(jobId);
@@ -2325,6 +2338,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  releaseTab(tabId);
   const cachedEmail = tabEmailsCache.get(tabId);
   tabEmailsCache.delete(tabId);
   let activeJobFound = false;
