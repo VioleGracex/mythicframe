@@ -1509,7 +1509,7 @@ async function getMythicSettings() {
       bridgeRunning: Boolean(statusData),
       bridgePort: BRIDGE_PORT,
       webPort: WEB_PORT,
-      extensionVersion: statusData?.extensionVersion || "1.5.5",
+      extensionVersion: statusData?.extensionVersion || "1.5.6",
       connected: Boolean(statusData?.connected),
       accounts: statusData?.accounts || [],
       tabs: statusData?.tabs || [],
@@ -1528,13 +1528,14 @@ async function generateWithBEI(options) {
     aspectRatio = "1:1",
     target = "gemini",
     accountSlot = 0,
+    preferredEmail,
     images = [],
     timeoutSeconds = 900,
     tabMode = "same_window_group",
     bringTabToFront = false,
     quality = "ultra_original",
     dispatchMode = "single",
-    chatSessionMode = "new_chat"
+    chatSessionMode = "same_chat"
   } = options;
   const processedImages = [];
   for (const img of images) {
@@ -1553,6 +1554,7 @@ async function generateWithBEI(options) {
     aspectRatio,
     target,
     accountSlot,
+    preferredEmail,
     images: processedImages,
     timeoutSeconds,
     tabMode,
@@ -2048,6 +2050,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             aspectRatio: { type: "string", description: "'1:1', '16:9', '9:16', '3:4', or '4:3' (default '1:1')" },
             target: { type: "string", enum: ["gemini", "chatgpt"], description: "AI service target (default 'gemini')" },
             accountSlot: { type: "number", description: "Account slot index (default 0)" },
+            preferredEmail: { type: "string", description: "Preferred Google/OpenAI account email to use for routing" },
             images: { type: "array", items: { type: "string" }, description: "Array of reference image paths or base64 data URIs" },
             style: { type: "string", description: "Optional art style snippet" },
             quality: { type: "string", enum: ["standard", "high", "ultra_original"], description: "Image resolution & quality mode: 'ultra_original' (master full-res), 'high' (2K), or 'standard' (preview)" },
@@ -2075,7 +2078,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             quality: { type: "string", enum: ["standard", "high", "ultra_original"], description: "Image resolution & quality mode for BEI: 'ultra_original', 'high', or 'standard'" },
             images: { type: "array", items: { type: "string" }, description: "Optional reference images" },
             target: { type: "string", enum: ["gemini", "chatgpt"] },
-            accountSlot: { type: "number" }
+            accountSlot: { type: "number" },
+            preferredEmail: { type: "string", description: "Preferred Google/OpenAI account email to use for routing" },
+            chatSessionMode: { type: "string", enum: ["same_chat", "temporary_chat", "new_chat"], description: "Conversation session mode: 'same_chat' (reuses active thread), 'new_chat' (forces fresh conversation). Default: 'same_chat'" }
           },
           required: ["prompt"]
         }
@@ -2459,10 +2464,11 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
         aspectRatio: args.aspectRatio || "1:1",
         target: args.target || "gemini",
         accountSlot: args.accountSlot ?? 0,
+        preferredEmail: args.preferredEmail,
         images: args.images || [],
         quality: args.quality || "ultra_original",
         dispatchMode: args.dispatchMode || "single",
-        chatSessionMode: args.chatSessionMode || "new_chat",
+        chatSessionMode: args.chatSessionMode || "same_chat",
         timeoutSeconds: args.timeoutSeconds || 900
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, "/");
@@ -2473,13 +2479,16 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
         sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
       } catch (e) {
       }
+      const meta = beiRes.metadata || {};
+      const chatInfo = meta.chatName ? `Active Chat: ${meta.chatName}\n` : "";
+      const accountInfo = meta.email ? `Account: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}\n` : "";
       return {
         content: [{
           type: "text",
           text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!
 Image saved to: ${beiRes.filePath}${sizeMB}
 Job ID: ${beiRes.jobId}
-Quality: ${args.quality || "ultra_original"}
+${chatInfo}${accountInfo}Quality: ${args.quality || "ultra_original"}
 File Size: ${sizeMB.trim() || "Unknown"}
 ${wantTransparent ? "Background: Isolated on flat key for transparent cutout\n" : ""}
 Please embed this image for the user, AND provide a clickable markdown link [${fileName}](file:///${formattedPath}) so they can easily open it!`
@@ -2514,8 +2523,10 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
           aspectRatio: args.aspectRatio || "1:1",
           target: args.target || "gemini",
           accountSlot: args.accountSlot ?? 0,
+          preferredEmail: args.preferredEmail,
           quality: args.quality || "ultra_original",
           dispatchMode: args.dispatchMode || "single",
+          chatSessionMode: args.chatSessionMode || "same_chat",
           images: args.images || []
         });
         const formattedPath = beiRes.filePath.replace(/\\/g, "/");
@@ -2526,12 +2537,16 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
           sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
         } catch (e) {
         }
+        const meta = beiRes.metadata || {};
+        const chatInfo = meta.chatName ? `\nActive Chat: ${meta.chatName}` : "";
+        const accountInfo = meta.email ? `\nAccount: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}` : "";
         return {
           content: [{
             type: "text",
             text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!
 
 Image saved to: ${beiRes.filePath}${sizeMB}
+Job ID: ${beiRes.jobId}${chatInfo}${accountInfo}
 Quality: ${args.quality || "ultra_original"}
 File Size: ${sizeMB.trim() || "Unknown"}
 Dispatch Mode: ${args.dispatchMode || "single"}
@@ -2551,8 +2566,10 @@ Please embed this image for the user, AND provide a clickable markdown link [${f
           aspectRatio: args.aspectRatio || "1:1",
           target: args.target || "gemini",
           accountSlot: args.accountSlot ?? 0,
+          preferredEmail: args.preferredEmail,
           quality: args.quality || "ultra_original",
           dispatchMode: args.dispatchMode || "single",
+          chatSessionMode: args.chatSessionMode || "same_chat",
           images: args.images || []
         });
         const formattedPath = beiRes.filePath.replace(/\\/g, "/");
@@ -2563,12 +2580,16 @@ Please embed this image for the user, AND provide a clickable markdown link [${f
           sizeMB = ` (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`;
         } catch (e) {
         }
+        const meta = beiRes.metadata || {};
+        const chatInfo = meta.chatName ? `\nActive Chat: ${meta.chatName}` : "";
+        const accountInfo = meta.email ? `\nAccount: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}` : "";
         return {
           content: [{
             type: "text",
             text: `IMAGE GENERATED SUCCESSFULLY VIA BEI!
 
 Image saved to: ${beiRes.filePath}${sizeMB}
+Job ID: ${beiRes.jobId}${chatInfo}${accountInfo}
 Quality: ${args.quality || "ultra_original"}
 File Size: ${sizeMB.trim() || "Unknown"}
 Dispatch Mode: ${args.dispatchMode || "single"}

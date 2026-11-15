@@ -671,9 +671,30 @@
     return "";
   }
 
+  function extractActiveChatName() {
+    try {
+      const activeLink = document.querySelector('nav a[class*="active"], nav li[data-active="true"] a, nav a[aria-current="page"]');
+      if (activeLink) {
+        const text = (activeLink.textContent || '').trim();
+        if (text && text.length > 1 && !text.toLowerCase().includes('new chat')) {
+          return text.replace(/\s+/g, ' ').substring(0, 80);
+        }
+      }
+      if (document.title && document.title.trim()) {
+        let t = document.title.trim();
+        t = t.replace(/^ChatGPT\s*[-–—|•]\s*/i, '').replace(/\s*[-–—|•]\s*ChatGPT$/i, '').trim();
+        if (t && t.toLowerCase() !== 'chatgpt' && t.length > 2) {
+          return t.substring(0, 80);
+        }
+      }
+    } catch (e) {}
+    return 'New Chat';
+  }
+
   // Expose global execution methods so background worker can invoke directly via executeScript
   window.__MYTHIC_BEI_EXECUTE_PROMPT__ = executePrompt;
   window.__MYTHIC_BEI_GET_EMAIL__ = extractChatGPTAccountEmail;
+  window.__MYTHIC_BEI_GET_CHAT_NAME__ = extractActiveChatName;
 
   window.addEventListener('__MYTHIC_BEI_EXECUTE_PROMPT__', (e) => {
     if (e.detail) {
@@ -698,6 +719,7 @@
         email: email,
         url: window.location.href,
         title: document.title,
+        chatName: extractActiveChatName(),
         composerReady: Boolean(getComposerElement())
       });
       return true;

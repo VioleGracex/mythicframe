@@ -30,3 +30,15 @@ This document defines mandatory operational guardrails for AI coding assistants 
 * **Link Placement**: Never place outbound URLs in the main post text. Always publish outbound links (GitHub repository, articles, docs) in the first comment or reply to prevent algorithmic reach throttling.
 * **Dedicated Browser Port**: Always use port `9223` for Brave browser CDP automation to avoid port conflicts with Chrome.
 
+## 5. BEI Browser Extension & Session Rules
+* **Account Priority Hierarchy**:
+  1. **User-Specified Account**: If the user requests a specific email (`preferredEmail`), route strictly to that account tab.
+  2. **Pro / Advanced Subscription Tier**: Prioritize tabs running Gemini Advanced (`tier === 'advanced'`) or ChatGPT Plus/Pro over free accounts.
+  3. **Free Tier**: Fallback to standard slots when no higher-tier account is configured or active.
+* **Chat Session Strategy (`chatSessionMode`)**:
+  - **`same_chat` (Default for Iterations)**: Reuses the active conversation thread on the tab for character consistency, style continuity, and iterative adjustments.
+  - **`new_chat` (Fresh Context)**: Use when generating completely unrelated subjects or scenes, or after a safety refusal or error.
+* **Active Chat Tracking**:
+  - Always report the active chat name (`chatName`) and active account (`email`, `tier`) returned in the generation metadata.
+
+

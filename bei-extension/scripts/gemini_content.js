@@ -91,6 +91,37 @@
 
   window.__MYTHIC_BEI_GET_TIER__ = extractAccountTierAndCapabilities;
 
+  function extractActiveChatName() {
+    try {
+      // 1. Check selected conversation item in sidebar
+      const activeItem = document.querySelector(
+        '.conversation-container.selected, [data-test-id="conversation-title"], .recent-item.selected, .recent-item[aria-selected="true"], [role="navigation"] [aria-selected="true"], mat-list-item.selected'
+      );
+      if (activeItem) {
+        const text = (activeItem.getAttribute('aria-label') || activeItem.textContent || '').trim();
+        if (text && text.length > 1 && !text.toLowerCase().includes('new chat') && !text.toLowerCase().includes('gemini')) {
+          return text.replace(/\s+/g, ' ').substring(0, 80);
+        }
+      }
+
+      // 2. Clean document.title: "Gemini - The Cartographer's Peaceful Tea Break" -> "The Cartographer's Peaceful Tea Break"
+      if (document.title && document.title.trim()) {
+        let t = document.title.trim();
+        t = t.replace(/^Gemini\s*[-–—|•]\s*/i, '').replace(/\s*[-–—|•]\s*Gemini$/i, '').trim();
+        if (t && t.toLowerCase() !== 'gemini' && t.length > 2) {
+          return t.substring(0, 80);
+        }
+      }
+
+      // 3. Fallback: URL conversation ID
+      const convId = protocol.extractConversationId ? protocol.extractConversationId(window.location.href) : null;
+      if (convId) return `Chat ${convId.substring(0, 8)}`;
+    } catch (e) {}
+    return 'New Chat';
+  }
+
+  window.__MYTHIC_BEI_GET_CHAT_NAME__ = extractActiveChatName;
+
   const COMPOSER_SELECTORS = [
     "rich-textarea div[contenteditable='true']",
     "div[contenteditable='true'][role='textbox']",
@@ -355,6 +386,20 @@
         const el = document.querySelector(sel);
         if (el && el.offsetParent !== null) return el;
       } catch (e) {}
+    }
+    return null;
+  }
+
+  async function waitForComposer(timeoutMs = 15000) {
+    let composer = getComposerElement();
+    if (composer) return composer;
+    const interval = 300;
+    const maxTries = Math.ceil(timeoutMs / interval);
+    for (let i = 0; i < maxTries; i++) {
+      await new Promise(r => setTimeout(r, interval));
+      autoDismissConsentDialogs();
+      composer = getComposerElement();
+      if (composer) return composer;
     }
     return null;
   }
@@ -696,19 +741,27 @@
           addBtn.click();
           await new Promise(r => setTimeout(r, 250));
 
-          // Find "Create image" in menu
+          // Find "Create image" in menu - strictly avoid file upload / system dialog triggers!
           const menuItems = Array.from(document.querySelectorAll(".cdk-overlay-pane [role='menuitem'], [role='menu'] button, [role='menu'] [role='menuitem']"));
           const createImgItem = menuItems.find(m => {
-            const txt = (m.textContent || '').toLowerCase();
-            const aria = (m.getAttribute('aria-label') || '').toLowerCase();
-            return txt.includes('create image') || txt.includes('image') || txt.includes('ØµÙˆØ±Ø©') ||
-                   txt.includes('Ø¥Ù†Ø´Ø§Ø¡ ØµÙˆØ±Ø©') || aria.includes('create image') || aria.includes('ØµÙˆØ±Ø©') ||
-                   m.querySelector('[data-icon*="brush"], [data-icon*="image"], mat-icon, span.google-symbols, .material-symbols-outlined');
+            const txt = (m.textContent || '').trim().toLowerCase();
+            const aria = (m.getAttribute('aria-label') || '').trim().toLowerCase();
+            // Strictly exclude any upload, attach, file, or computer options
+            if (txt.includes('upload') || txt.includes('file') || txt.includes('computer') ||
+                aria.includes('upload') || aria.includes('file') || aria.includes('computer')) {
+              return false;
+            }
+            if (txt.includes('create image') || txt.includes('generate image') ||
+                txt.includes('إنشاء صورة') || aria.includes('create image') || aria.includes('إنشاء صورة')) {
+              return true;
+            }
+            const icon = m.querySelector('[data-icon*="brush"], [data-icon*="palette"], mat-icon[fonticon*="brush"], mat-icon[fonticon*="draw"]');
+            return Boolean(icon);
           });
 
           if (createImgItem) {
             createImgItem.click();
-            console.log('âœ… [MythicFrame BEI] Native "Create image" tool clicked from menu.');
+            console.log('[MythicFrame BEI] Native "Create image" tool clicked from menu.');
             await new Promise(r => setTimeout(r, 400));
             nativeActive = true;
           }
@@ -738,17 +791,71 @@
     return isCreateImageTagActive();
   }
 
+  function dismissImageLightbox() {
+    try {
+      // Detect if Gemini opened an image in full-screen / lightbox view
+      const lightboxSelectors = [
+        'mat-dialog-container:has(img)',
+        '[role="dialog"]:has(img)',
+        '.lightbox-container',
+        '.full-size-preview',
+        'div[aria-label*="image preview" i]',
+        'div[aria-label*="full screen" i]',
+        '.cdk-overlay-pane:has(img.preview-image)'
+      ];
+      const lightbox = document.querySelector(lightboxSelectors.join(', '));
+      if (lightbox) {
+        console.log('[MythicFrame BEI] Detected full-screen image lightbox overlay. Dismissing...');
+        const closeBtn = lightbox.querySelector('button[aria-label*="close" i], button[aria-label*="dismiss" i], button:has(mat-icon[fonticon*="close"]), button.close-button') ||
+                         document.querySelector('.cdk-overlay-container button[aria-label*="close" i]');
+        if (closeBtn) {
+          closeBtn.click();
+        }
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
   function clearComposer() {
     try {
+      // 0. Ensure no rogue full-screen image lightbox is active
+      dismissImageLightbox();
+
       // 1. Remove attachment preview chips (protecting any active 'Create image' tool tag!)
-      const closeButtons = Array.from(document.querySelectorAll(
-        "button[aria-label*='Remove' i], button[aria-label*='Clear' i], button[aria-label*='Delete' i], [aria-label*='remove attachment' i], [aria-label*='remove file' i], .attachment-card button, [data-test-id*='attachment'] button, button.delete-button, button.close-button, [aria-label*='dismiss' i]"
-      )).filter(btn => {
+      // CRITICAL GUARD: NEVER click image thumbnail or preview buttons! They trigger full-screen lightbox!
+      const isDangerousPreviewButton = (btn) => {
+        if (!btn) return false;
         const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-        const text = (btn.textContent || '').toLowerCase();
+        const title = (btn.getAttribute('title') || '').toLowerCase();
+        const cls = (btn.className || '').toString().toLowerCase();
+        return aria.includes('view') || aria.includes('preview') || aria.includes('full') ||
+               aria.includes('expand') || aria.includes('zoom') || aria.includes('open') ||
+               title.includes('view') || title.includes('preview') || title.includes('full') ||
+               cls.includes('thumbnail') || cls.includes('preview') || cls.includes('image-btn') ||
+               btn.querySelector('img') !== null;
+      };
+
+      const isGenuineRemoveButton = (btn) => {
+        if (!btn || isDangerousPreviewButton(btn)) return false;
+        const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+        const title = (btn.getAttribute('title') || '').toLowerCase();
+        const text = (btn.textContent || '').trim().toLowerCase();
+        const iconName = (btn.querySelector('mat-icon')?.textContent || btn.querySelector('mat-icon')?.getAttribute('fonticon') || '').trim().toLowerCase();
+        return aria.includes('remove') || aria.includes('delete') || aria.includes('clear') || aria.includes('dismiss') ||
+               title.includes('remove') || title.includes('delete') || title.includes('clear') ||
+               text === 'close' || text === 'clear' || iconName === 'close' || iconName === 'clear';
+      };
+
+      const closeButtons = Array.from(document.querySelectorAll(
+        "button[aria-label*='Remove' i], button[aria-label*='Clear' i], button[aria-label*='Delete' i], [aria-label*='remove attachment' i], [aria-label*='remove file' i], button.delete-button, button.close-button, [aria-label*='dismiss' i]"
+      )).filter(btn => {
+        if (!isGenuineRemoveButton(btn)) return false;
         const chipText = (btn.closest('mat-chip, mat-chip-row, [class*="chip"]') || {}).textContent || '';
         // NEVER dismiss the "Create image" tool tag!
-        if (aria.includes('create image') || text.includes('create image') || chipText.toLowerCase().includes('create image') || btn.closest('#custom-create-image-tag')) {
+        if (chipText.toLowerCase().includes('create image') || btn.closest('#custom-create-image-tag')) {
           return false;
         }
         return true;
@@ -764,18 +871,22 @@
         } catch (e) {}
       }
 
-      // Also trigger remove buttons inside attachment cards (excluding tool tags)
+      // Also trigger ONLY genuine remove buttons inside attachment cards
       const chips = Array.from(document.querySelectorAll(
         "[data-test-id*='attachment'], [data-test-id*='file'], .attachment-card, [class*='uploader-preview'], [class*='file-preview']"
       ));
       for (const chip of chips) {
         const chipContent = (chip.textContent || '').toLowerCase();
         if (chipContent.includes('create image')) continue;
-        const btn = chip.querySelector('button, [role="button"]');
-        if (btn) {
-          try { btn.click(); } catch (e) {}
+        const btns = Array.from(chip.querySelectorAll('button, [role="button"]'));
+        for (const btn of btns) {
+          if (isGenuineRemoveButton(btn)) {
+            try { btn.click(); } catch (e) {}
+          }
         }
       }
+
+      dismissImageLightbox();
 
       // 2. Clear all file inputs and reset their state
       const fileInputs = document.querySelectorAll("input[type='file']");
@@ -804,16 +915,6 @@
           composer.dispatchEvent(new Event('change', { bubbles: true }));
         }
       }
-      // 4. If generation is actively running, halt it by clicking the Stop button
-      const stopButtons = Array.from(document.querySelectorAll(
-        "button[aria-label*='Stop' i], button[data-test-id*='stop'], button.stop-button, [aria-label*='Stop response' i], [aria-label*='Stop generating' i]"
-      ));
-      for (const btn of stopButtons) {
-        try {
-          btn.click();
-          console.log('[MythicFrame BEI] Clicked Gemini Stop response button.');
-        } catch (e) {}
-      }
       console.log('[MythicFrame BEI] Gemini composer wiped clean.');
     } catch (e) {
       console.warn('[MythicFrame BEI] Error clearing composer:', e);
@@ -838,19 +939,28 @@
 
   function clearOldAttachments() {
     try {
+      dismissImageLightbox();
       const composer = getComposerElement();
       const inputContainer = composer ? (composer.closest('.bottom-container, .input-area, .chat-input-container, form, main') || document.body) : document.body;
       const removeButtons = Array.from(inputContainer.querySelectorAll(
         'button[aria-label*="Remove" i], button[aria-label*="Clear" i], button[aria-label*="Delete" i], [aria-label*="remove attachment" i], [aria-label*="remove file" i], [aria-label*="remove image" i]'
-      )).filter(el => !el.closest('header, nav, [role="navigation"]'));
+      )).filter(el => {
+        if (el.closest('header, nav, [role="navigation"]')) return false;
+        if (el.querySelector('img')) return false;
+        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+        if (aria.includes('view') || aria.includes('preview') || aria.includes('expand') || aria.includes('full')) return false;
+        return true;
+      });
       for (const btn of removeButtons) {
         try { btn.click(); } catch (e) {}
       }
+      dismissImageLightbox();
     } catch (e) {}
   }
 
   function autoDismissConsentDialogs() {
     try {
+      dismissImageLightbox();
       // 1. Check all modals and overlay panes
       const dialogs = document.querySelectorAll(
         '[role="dialog"], [role="alertdialog"], mat-dialog-container, .cdk-overlay-pane, div.modal, .tos-dialog, mat-bottom-sheet-container, .banner, [class*="consent"], [class*="dialog"]'
@@ -1097,42 +1207,55 @@
       await new Promise(r => setTimeout(r, 400));
       autoDismissConsentDialogs();
 
-      let fileInput = findGeminiFileInput();
-      if (!fileInput) {
-        const attachBtns = Array.from(document.querySelectorAll(
-          "button[aria-label*='Add files' i], button[aria-label*='Add image' i], button[aria-label*='Upload image' i], button[aria-label*='Upload files' i], button[aria-label*='Upload file' i], button[aria-label*='Upload' i], button.uploader-button, [data-test-id*='upload-button'], [data-test-id*='add-file'], button[mattooltip*='Upload' i], button[mattooltip*='Add files' i]"
-        )).filter(b => !b.closest('header, nav, [role="navigation"], [aria-label*="Google Account" i]'));
+      // Suppress accidental native file picker click dialogs while attaching images
+      try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'ARM_SUPPRESS_FILE_PICKER' }, '*'); } catch (e) {}
+      const origFileInputClick = HTMLInputElement.prototype.click;
+      let hookSuppressed = true;
+      HTMLInputElement.prototype.click = function () {
+        if (hookSuppressed && this.type === 'file') {
+          console.log('[MythicFrame BEI] Suppressed native file picker click dialog during automated attachment.');
+          return;
+        }
+        return origFileInputClick.apply(this, arguments);
+      };
 
-        for (const btn of attachBtns) {
+      try {
+        let fileInput = findGeminiFileInput();
+        if (!fileInput) {
+          const attachBtns = Array.from(document.querySelectorAll(
+            "button[aria-label*='Add files' i], button[aria-label*='Add image' i], button[aria-label*='Upload image' i], button[aria-label*='Upload files' i], button[aria-label*='Upload file' i], button[aria-label*='Upload' i], button.uploader-button, [data-test-id*='upload-button'], [data-test-id*='add-file'], button[mattooltip*='Upload' i], button[mattooltip*='Add files' i]"
+          )).filter(b => !b.closest('header, nav, [role="navigation"], [aria-label*="Google Account" i]'));
+
+          for (const btn of attachBtns) {
+            try {
+              btn.click();
+              await new Promise(r => setTimeout(r, 250));
+              // Dismiss menu by pressing Escape to keep any mounted file input in DOM without clicking dialog options
+              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+              break;
+            } catch (e) {}
+          }
+
+          fileInput = findGeminiFileInput();
+        }
+
+        // Step 2: Assign files directly to fileInput
+        if (fileInput) {
           try {
-            btn.click();
-            await new Promise(r => setTimeout(r, 300));
-            const menuItems = Array.from(document.querySelectorAll('[role="menuitem"], button, .mat-mdc-menu-item'));
-            const uploadItem = menuItems.find(m => {
-              const text = (m.textContent || '').toLowerCase();
-              return (text.includes('upload') || text.includes('file') || text.includes('computer')) && !text.includes('create image');
-            });
-            if (uploadItem) {
-              uploadItem.click();
-              await new Promise(r => setTimeout(r, 200));
-            }
-            break;
-          } catch (e) {}
+            fileInput.files = dt.files;
+            fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+            fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+            console.log('[MythicFrame BEI] Attached references via scoped file input.');
+          } catch (e) {
+            console.debug('[MythicFrame BEI] File input assignment notice:', e);
+          }
         }
-
-        fileInput = findGeminiFileInput();
-      }
-
-      // Step 2: Assign files directly to fileInput
-      if (fileInput) {
-        try {
-          fileInput.files = dt.files;
-          fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-          fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-          console.log('[MythicFrame BEI] Attached references via scoped file input.');
-        } catch (e) {
-          console.debug('[MythicFrame BEI] File input assignment notice:', e);
-        }
+      } finally {
+        setTimeout(() => {
+          hookSuppressed = false;
+          HTMLInputElement.prototype.click = origFileInputClick;
+          try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'DISARM_SUPPRESS_FILE_PICKER' }, '*'); } catch (e) {}
+        }, 4000);
       }
 
       // Step 3: Multi-target HTML5 Drag & Drop sequence
@@ -1393,7 +1516,7 @@
     return { finalData, srcUrl };
   }
 
-  async function handleJobRecovery(jobId, prompt, chatUrl, quality = "ultra_original", aspectRatio = "1:1", modelQuality = "auto") {
+  async function handleJobRecovery(jobId, prompt, chatUrl, quality = "ultra_original", aspectRatio = "1:1", modelQuality = "auto", images = []) {
     console.log(`[MythicFrame BEI] Starting recovery scan for active job ${jobId}...`);
     ensureBackgroundCpuAwake();
 
@@ -1455,16 +1578,52 @@
         return;
       }
 
-      // If latest response is still generating, re-bind observation polling loop!
+      // If latest response is still generating, passively wait for completion without disrupting generation!
       if (isModelResponseGenerating(latest) || getStopButton()) {
-        console.log(`[MythicFrame BEI Recovery] Model response is currently generating. Attaching observation loop...`);
-        return executePrompt(jobId, prompt, 900, [], quality, aspectRatio, modelQuality);
+        console.log(`[MythicFrame BEI Recovery] Model response is actively generating. Attaching passive observer (no stop, no resend)...`);
+        reportProgress(jobId, 'generating', 'Reconnected to in-progress Gemini generation. Observing...');
+        const pollStart = Date.now();
+        const pollInterval = setInterval(async () => {
+          if (Date.now() - pollStart > 600000) {
+            clearInterval(pollInterval);
+            return;
+          }
+          const currentLatest = document.querySelector('model-response:last-of-type, [data-test-id*="model-response"]:last-of-type, div.response-container:last-of-type');
+          if (!currentLatest) return;
+          const imgs = protocol.getAllImagesRecursively(currentLatest);
+          for (const img of imgs) {
+            if (protocol.isGeneratedImage(img) && img.complete && (img.naturalWidth > 120 || img.naturalHeight > 120)) {
+              clearInterval(pollInterval);
+              console.log(`[MythicFrame BEI Recovery] Harvested generated image for job ${jobId}!`);
+              const extracted = await extractFullResolutionAsset(img, quality);
+              const srcUrl = extracted.srcUrl || img.currentSrc || img.src;
+              chrome.runtime.sendMessage({
+                type: 'GENERATION_COMPLETED',
+                data: {
+                  jobId,
+                  image: extracted.finalData || srcUrl,
+                  target: 'gemini',
+                  metadata: {
+                    srcUrl,
+                    width: img.naturalWidth || 1024,
+                    height: img.naturalHeight || 1024,
+                    chatName: extractActiveChatName(),
+                    retrievalMethod: 'recovered_passive_harvest',
+                    chatUrl: window.location.href
+                  }
+                }
+              });
+              return;
+            }
+          }
+        }, 1500);
+        return;
       }
     }
 
-    // If no response exists at all, this was a draft loss prior to submission
-    console.log(`[MythicFrame BEI Recovery] No model response detected. Re-injecting prompt for clean submission...`);
-    return executePrompt(jobId, prompt, 900, [], quality, aspectRatio, modelQuality);
+    // Only if absolutely no model turn exists and prompt was not submitted
+    console.log(`[MythicFrame BEI Recovery] No model response detected. Re-dispatching prompt...`);
+    return executePrompt(jobId, prompt, 900, images, quality, aspectRatio, modelQuality);
   }
 
   async function executePrompt(jobId, prompt, timeoutSeconds = 900, images = [], quality = "ultra_original", aspectRatio = "1:1", modelQuality = "auto") {
@@ -1480,15 +1639,7 @@
     const initialConversationId = protocol.extractConversationId ? protocol.extractConversationId(window.location.href) : null;
 
     // Wait up to 30 seconds for the composer element to become available in SPA DOM
-    let composer = getComposerElement();
-    if (!composer) {
-      for (let i = 0; i < 60; i++) {
-        await new Promise(r => setTimeout(r, 500));
-        autoDismissConsentDialogs();
-        composer = getComposerElement();
-        if (composer) break;
-      }
-    }
+    let composer = await waitForComposer(30000);
 
     if (!composer) {
       if (keepAlivePort) keepAlivePort.disconnect();
@@ -1779,6 +1930,7 @@
               messageId: (typeof imgOrUrl !== 'string' && imgOrUrl.closest)
                 ? (imgOrUrl.closest('conversation-turn, model-response, [data-message-id]')?.getAttribute('data-message-id') || null)
                 : null,
+              chatName: extractActiveChatName(),
               chatUrl: window.location.href
             }
           }
@@ -2383,13 +2535,16 @@
     if (request.action === 'GET_TAB_INFO') {
       const email = extractGoogleAccountEmail();
       const slot = protocol.extractGeminiAccountSlot(window.location.href);
+      const tierInfo = extractAccountTierAndCapabilities();
       sendResponse({
         success: true,
         target: 'gemini',
         email: email,
         accountSlot: slot,
+        tier: tierInfo.tier,
         url: window.location.href,
         title: document.title,
+        chatName: extractActiveChatName(),
         composerReady: Boolean(getComposerElement())
       });
       return true;
@@ -2429,8 +2584,8 @@
     }
 
     if (request.action === 'RECOVER_JOB') {
-      const { jobId, prompt, chatUrl, quality, aspectRatio, modelQuality } = request.data || {};
-      handleJobRecovery(jobId, prompt, chatUrl, quality || 'ultra_original', aspectRatio || '1:1', modelQuality || 'auto');
+      const { jobId, prompt, chatUrl, quality, aspectRatio, modelQuality, images = [] } = request.data || {};
+      handleJobRecovery(jobId, prompt, chatUrl, quality || 'ultra_original', aspectRatio || '1:1', modelQuality || 'auto', images);
       sendResponse({ success: true, recovering: true });
       return true;
     }

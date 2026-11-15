@@ -39,7 +39,8 @@ const activeJobs = new Map(); // jobId -> { tabId, target, prompt, accountSlot }
 const busyTabs = new Set(); // tabId -> boolean (strictly locked while job is running)
 const slotQueues = new Map(); // slotKey -> Array<jobData>
 const tabEmailsCache = new Map(); // tabId -> email string
-const knownGoogleAccounts = new Map(); // slot -> { slot, email, name }
+const knownGoogleAccounts = new Map(); // slot -> { slot, email, name, tier }
+const tabChatHistory = new Map(); // tabId -> { chatName, chatUrl, conversationId, target, accountSlot, updatedAt }
 const inFlightTabCreations = new Map(); // target:slot -> Promise<tabId>
 const pendingFullSizeCaptures = new Map(); // jobId -> { resolve, timer } for native 2K Download capture
 let lastGeminiDownloadId = null;           // most recent Gemini image download observed while a capture was armed
@@ -173,8 +174,11 @@ function restoreSessionJobs() {
           if (!activeJobs.has(id)) {
             activeJobs.set(id, job);
           }
+          if (job && job.tabId) {
+            lockTab(job.tabId);
+          }
         }
-        console.log(`[MythicFrame BEI] Restored ${res.beiActiveJobs.length} active jobs from session storage.`);
+        console.log(`[MythicFrame BEI] Restored ${res.beiActiveJobs.length} active jobs and tab locks from session storage.`);
       }
     });
   }
@@ -683,22 +687,32 @@ async function discoverTabs() {
         if (email && !isSystemEmail(email)) {
           knownGoogleAccounts.set(slot, { slot, email, name: email });
         }
+        const chatInfo = tabChatHistory.get(tab.id);
+        const rawTitle = (tab.title || '').replace(/^Gemini\s*[-–—|•]\s*/i, '').replace(/\s*[-–—|•]\s*Gemini$/i, '').trim();
+        const chatName = chatInfo?.chatName || (rawTitle && rawTitle.toLowerCase() !== 'gemini' ? rawTitle : 'New Chat');
         tabsList.push({
           tabId: tab.id,
           url: tab.url,
           target: "gemini",
           accountSlot: slot,
           email: email || (knownGoogleAccounts.get(slot)?.email) || undefined,
+          tier: knownGoogleAccounts.get(slot)?.tier || 'free',
+          chatName,
           title: tab.title || "Gemini Web",
           active: tab.active
         });
       } else if (tab.url.includes("chatgpt.com")) {
         const email = await extractTabEmail(tab.id, "chatgpt", 0);
+        const chatInfo = tabChatHistory.get(tab.id);
+        const rawTitle = (tab.title || '').replace(/^ChatGPT\s*[-–—|•]\s*/i, '').replace(/\s*[-–—|•]\s*ChatGPT$/i, '').trim();
+        const chatName = chatInfo?.chatName || (rawTitle && rawTitle.toLowerCase() !== 'chatgpt' ? rawTitle : 'New Chat');
         tabsList.push({
           tabId: tab.id,
           url: tab.url,
           target: "chatgpt",
           email: email || undefined,
+          tier: 'standard',
+          chatName,
           title: tab.title || "ChatGPT Web",
           active: tab.active
         });
@@ -969,14 +983,23 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       const availableGeminiTabs = allGeminiTabs.filter(t => !busyTabs.has(t.id));
 
       let matchedTab = null;
-      if (chatSessionMode === 'same_chat') {
-        // Explicit same_chat requested: reuse existing matching tab in BEI group or slot
-        matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t)) ||
-                     availableGeminiTabs.find(t => isSlotMatch(t));
+      // STRICT MULTI-AI ISOLATION:
+      // If the MythicFrame BEI tab group exists, ONLY reuse tabs inside the BEI group.
+      // Never touch external browser tabs that belong to other AIs or user browsing sessions!
+      if (beiGroupTabIds.size > 0) {
+        if (chatSessionMode === 'same_chat') {
+          matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t));
+        } else {
+          matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t) && isCleanComposerTab(t));
+        }
       } else {
-        // new_chat (default): ONLY reuse if an idle tab is already sitting at clean base /app without active chat history
-        matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t) && isCleanComposerTab(t)) ||
-                     availableGeminiTabs.find(t => isSlotMatch(t) && isCleanComposerTab(t));
+        // Cold start before group creation: only claim tab if it is unpinned, clean composer base, and not in another user group
+        const safeCandidates = availableGeminiTabs.filter(t => !t.pinned && (!t.groupId || t.groupId === (chrome.tabGroups ? chrome.tabGroups.TAB_GROUP_ID_NONE : -1)));
+        if (chatSessionMode === 'same_chat') {
+          matchedTab = safeCandidates.find(t => isSlotMatch(t));
+        } else {
+          matchedTab = safeCandidates.find(t => isSlotMatch(t) && isCleanComposerTab(t));
+        }
       }
 
       if (matchedTab && matchedTab.id) {
@@ -1103,11 +1126,19 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       });
 
       let matchedTab = null;
-      if (chatSessionMode === 'same_chat') {
-        matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id)) || availableChatGptTabs[0];
+      if (beiGroupTabIds.size > 0) {
+        if (chatSessionMode === 'same_chat') {
+          matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id));
+        } else {
+          matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id) && isCleanChatGptTab(t));
+        }
       } else {
-        matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id) && isCleanChatGptTab(t)) ||
-                     availableChatGptTabs.find(t => isCleanChatGptTab(t));
+        const safeCandidates = availableChatGptTabs.filter(t => !t.pinned && (!t.groupId || t.groupId === (chrome.tabGroups ? chrome.tabGroups.TAB_GROUP_ID_NONE : -1)));
+        if (chatSessionMode === 'same_chat') {
+          matchedTab = safeCandidates[0];
+        } else {
+          matchedTab = safeCandidates.find(t => isCleanChatGptTab(t));
+        }
       }
 
       if (matchedTab && matchedTab.id) {
@@ -1269,23 +1300,36 @@ function isSlotBusy(target, slot) {
 async function startJob(jobData) {
   const { jobId, target, prompt, fullPrompt, aspectRatio = (storedDefaultAspectRatio || '1:1'), modelQuality = (storedDefaultModelQuality || 'auto'), accountSlot = 0, timeoutSeconds, images = [], tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'new_chat', tabSessionId = null, quality = 'ultra_original' } = jobData;
   const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
-  const tabId = await findOrCreateTab(target, parsedSlot, tabMode, bringTabToFront, chatSessionMode, tabSessionId, jobData.dispatchMode || 'single');
-  if (!tabId) {
-    throw new Error(`No available browser tab found or created for target: ${target} (slot: ${parsedSlot})`);
-  }
 
-  lockTab(tabId);
-  activeJobs.set(jobId, { tabId, target, prompt, fullPrompt, accountSlot: parsedSlot, aspectRatio, modelQuality, submitted: false, dispatchMode: jobData.dispatchMode || 'single' });
-  emitAuditLog("PROMPT_DISPATCHED", `Dispatched prompt to ${target} tab ${tabId} (slot ${parsedSlot}, batch: ${jobData.dispatchMode === 'multi'})`, {
-    jobId,
-    target,
-    accountSlot: parsedSlot,
-    email: maskEmail(tabEmailsCache.get(tabId)),
-    promptSummary: prompt ? prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '') : '',
-    promptLength: prompt ? prompt.length : 0,
-    isBatch: jobData.dispatchMode === 'multi'
-  });
+  // Synchronous reservation: prevent subsequent requests from slipping through while findOrCreateTab runs!
+  activeJobs.set(jobId, { target, prompt, fullPrompt, images, timeoutSeconds, tabMode, bringTabToFront, quality, accountSlot: parsedSlot, status: 'routing', submitted: false, dispatchMode: jobData.dispatchMode || 'single' });
   persistSessionJobs();
+
+  let tabId = null;
+  try {
+    tabId = await findOrCreateTab(target, parsedSlot, tabMode, bringTabToFront, chatSessionMode, tabSessionId, jobData.dispatchMode || 'single');
+    if (!tabId) {
+      throw new Error(`No available browser tab found or created for target: ${target} (slot: ${parsedSlot})`);
+    }
+
+    lockTab(tabId);
+    activeJobs.set(jobId, { tabId, target, prompt, fullPrompt, images, timeoutSeconds, tabMode, bringTabToFront, quality, accountSlot: parsedSlot, aspectRatio, modelQuality, submitted: false, dispatchMode: jobData.dispatchMode || 'single' });
+    emitAuditLog("PROMPT_DISPATCHED", `Dispatched prompt to ${target} tab ${tabId} (slot ${parsedSlot}, batch: ${jobData.dispatchMode === 'multi'})`, {
+      jobId,
+      target,
+      accountSlot: parsedSlot,
+      email: maskEmail(tabEmailsCache.get(tabId)),
+      promptSummary: prompt ? prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '') : '',
+      promptLength: prompt ? prompt.length : 0,
+      isBatch: jobData.dispatchMode === 'multi'
+    });
+    persistSessionJobs();
+  } catch (err) {
+    if (tabId) releaseTab(tabId);
+    activeJobs.delete(jobId);
+    persistSessionJobs();
+    throw err;
+  }
 
   // Ghost Mode: Never steal OS window focus or hijack the user's active browsing tab
   if (bringTabToFront) {
@@ -1534,8 +1578,28 @@ async function handleBridgeCommand(msg) {
   }
 
   if (type === "EXECUTE_PROMPT") {
-    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot = 0, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'new_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single' } = data;
+    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot = 0, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'new_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single', preferredEmail, email } = data;
     let parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
+
+    // Account Priority System:
+    // Priority 1: User explicitly requested a specific email address
+    const targetEmail = (preferredEmail || email || '').trim().toLowerCase();
+    if (targetEmail) {
+      for (const [s, acc] of knownGoogleAccounts.entries()) {
+        if (acc && acc.email && acc.email.toLowerCase() === targetEmail) {
+          parsedSlot = s;
+          console.log(`[MythicFrame BEI Worker] Account Priority 1: Prioritizing requested email ${acc.email} on slot ${s}`);
+          break;
+        }
+      }
+    } else if (data.accountSlot === undefined && target === 'gemini') {
+      // Priority 2: Automatically prioritize Pro / Gemini Advanced subscription accounts!
+      const proSlot = Array.from(knownGoogleAccounts.values()).find(acc => acc && (acc.tier === 'advanced' || acc.tier === 'pro') && !isSlotBusy(target, acc.slot));
+      if (proSlot) {
+        parsedSlot = proSlot.slot;
+        console.log(`[MythicFrame BEI Worker] Account Priority 2: Auto-prioritized Gemini Advanced subscription on slot ${proSlot.slot} (${proSlot.email})`);
+      }
+    }
 
     // Multi-Account Mode: Route to an idle account slot when multi mode is active and current slot is busy
     if (dispatchMode === 'multi' && isSlotBusy(target, parsedSlot)) {
@@ -1602,11 +1666,13 @@ async function handleBridgeCommand(msg) {
     const { jobId, target = "gemini", prompt, accountSlot = 0, timeoutSeconds = 60, tabMode = 'new_window_group', bringTabToFront = false, images = [] } = data;
     const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
 
+    let tabId = null;
     try {
       // In text mode, reuse current active tab
-      const tabId = await findOrCreateTab(target, parsedSlot, tabMode, bringTabToFront, 'same_chat');
+      tabId = await findOrCreateTab(target, parsedSlot, tabMode, bringTabToFront, 'same_chat');
       if (!tabId) throw new Error(`No browser tab found for ${target} slot ${parsedSlot}`);
 
+      lockTab(tabId);
       activeJobs.set(jobId, { tabId, target, prompt, accountSlot: parsedSlot, isText: true });
 
       chrome.tabs.sendMessage(tabId, {
@@ -1618,6 +1684,7 @@ async function handleBridgeCommand(msg) {
         }
       });
     } catch (err) {
+      if (tabId) releaseTab(tabId);
       activeJobs.delete(jobId);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -2300,7 +2367,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
               chatUrl: job.chatUrl,
               quality: job.quality,
               aspectRatio: job.aspectRatio,
-              modelQuality: job.modelQuality
+              modelQuality: job.modelQuality,
+              images: job.images || []
             }
           });
         } else {

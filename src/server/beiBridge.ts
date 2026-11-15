@@ -202,7 +202,7 @@ export class BEIBridgeServer {
   private pendingVerifyTabRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private pendingLibraryRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: any }>();
   private lastHeartbeat = Date.now();
-  private extensionVersion = '1.5.5';
+  private extensionVersion = '1.5.6';
   private projectDir = process.cwd();
   public latestProgress: Record<string, { step: string; detail: string; timestamp: number }> = {};
   public globalProgress: { step: string; detail: string; timestamp: number } | null = null;
@@ -889,6 +889,9 @@ export class BEIBridgeServer {
             payloadRecord.imageBase64 = isDataUri ? image : undefined;
             payloadRecord.candidates = data.metadata?.candidates;
             payloadRecord.tabUrl = data.metadata?.tabUrl || data.tabUrl;
+            payloadRecord.chatName = data.chatName || data.metadata?.chatName;
+            payloadRecord.email = data.email || data.metadata?.email;
+            payloadRecord.tier = data.tier || data.metadata?.tier;
             payloadRecord.accountSlot = data.accountSlot ?? job.accountSlot;
             payloadRecord.retrievalMethod = converted ? 'server_fetch' : (data.metadata?.retrievalMethod || (isDataUri ? 'extension_base64' : 'remote_url'));
             payloadRecord.candidatesCount = Array.isArray(data.metadata?.candidates) ? data.metadata.candidates.length : 0;
@@ -923,6 +926,9 @@ export class BEIBridgeServer {
               fullPrompt: data.fullPrompt || job.prompt,
               aspectRatio: data.aspectRatio,
               accountSlot: data.accountSlot,
+              email: data.email || data.metadata?.email,
+              tier: data.tier || data.metadata?.tier,
+              chatName: data.chatName || data.metadata?.chatName,
               srcUrl: data.metadata?.srcUrl,
               candidates: data.metadata?.candidates,
               retrievalMethod: payloadRecord?.retrievalMethod,
@@ -1076,7 +1082,7 @@ export class BEIBridgeServer {
   public async handleGenerateRequest(req: http.IncomingMessage, res: http.ServerResponse) {
     try {
       const payload = await this.parseRequestBody(req);
-      const { target = 'gemini', prompt, fullPrompt, aspectRatio = '16:9', accountSlot = 0, timeoutSeconds = 120, images = [], tabMode = 'same_window_group', bringTabToFront, chatSessionMode = 'new_chat', tabSessionId, preferredBrowser, browser } = payload;
+      const { target = 'gemini', prompt, fullPrompt, aspectRatio = '16:9', accountSlot = 0, timeoutSeconds = 120, images = [], tabMode = 'same_window_group', bringTabToFront, chatSessionMode = 'new_chat', tabSessionId, preferredBrowser, browser, preferredEmail, email } = payload;
 
       if (!prompt) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1182,6 +1188,7 @@ export class BEIBridgeServer {
             fullPrompt: fullPrompt || prompt,
             aspectRatio,
             accountSlot: hasExplicitSlot ? accountSlot : undefined,
+            preferredEmail: preferredEmail || email,
             timeoutSeconds: effectiveTimeout,
             images,
             tabMode,

@@ -36,10 +36,22 @@
     });
   }
 
+  let suppressFilePicker = false;
+  const origFileInputClick = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function (...args) {
+    if (suppressFilePicker && this.type === 'file') {
+      console.log('[MythicFrame BEI PageHook] Prevented native file picker open dialog.');
+      return;
+    }
+    return origFileInputClick.apply(this, args);
+  };
+
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data || e.data.source !== 'MYTHIC_BEI_CONTENT') return;
     if (e.data.type === 'ARM_FULLSIZE') { armed = true; captured = false; }
     else if (e.data.type === 'DISARM_FULLSIZE') { armed = false; }
+    else if (e.data.type === 'ARM_SUPPRESS_FILE_PICKER') { suppressFilePicker = true; }
+    else if (e.data.type === 'DISARM_SUPPRESS_FILE_PICKER') { suppressFilePicker = false; }
   });
 
   // Capture the exact Blob Gemini builds for the full-size download.

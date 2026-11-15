@@ -40,6 +40,7 @@ export interface BEIGenerateOptions {
   aspectRatio?: string;
   target?: 'gemini' | 'chatgpt';
   accountSlot?: number;
+  preferredEmail?: string;
   images?: string[];
   timeoutSeconds?: number;
   tabMode?: 'current' | 'new';
@@ -433,7 +434,7 @@ export async function getMythicSettings(): Promise<any> {
       bridgeRunning: Boolean(statusData),
       bridgePort: BRIDGE_PORT,
       webPort: WEB_PORT,
-      extensionVersion: statusData?.extensionVersion || '1.5.5',
+      extensionVersion: statusData?.extensionVersion || '1.5.6',
       connected: Boolean(statusData?.connected),
       accounts: statusData?.accounts || [],
       tabs: statusData?.tabs || [],
@@ -456,13 +457,14 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     aspectRatio = '1:1',
     target = 'gemini',
     accountSlot = 0,
+    preferredEmail,
     images = [],
     timeoutSeconds = 900,
     tabMode = 'same_window_group',
     bringTabToFront = false,
     quality = 'ultra_original',
     dispatchMode = 'single',
-    chatSessionMode = 'new_chat'
+    chatSessionMode = 'same_chat'
   } = options;
 
   // Process reference images (convert local file paths to base64 data URIs if necessary)
@@ -484,6 +486,7 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     aspectRatio,
     target,
     accountSlot,
+    preferredEmail,
     images: processedImages,
     timeoutSeconds,
     tabMode,
