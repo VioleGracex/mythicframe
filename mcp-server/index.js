@@ -1475,7 +1475,8 @@ async function saveLibraryAssetToFile(assetUrl, prefix = "library") {
     let extension = "jpg";
     if (assetUrl.startsWith("data:image/")) {
       const isPng = assetUrl.startsWith("data:image/png");
-      extension = isPng ? "png" : "jpg";
+      const isWebp = assetUrl.startsWith("data:image/webp");
+      extension = isPng ? "png" : (isWebp ? "webp" : "jpg");
       const base64Data = assetUrl.replace(/^data:image\/\w+;base64,/, "");
       buffer = Buffer.from(base64Data, "base64");
     } else {
@@ -1487,11 +1488,15 @@ async function saveLibraryAssetToFile(assetUrl, prefix = "library") {
       if (ct.includes("png")) extension = "png";
       else if (ct.includes("webp")) extension = "webp";
     }
+    if (buffer.length > 12 && buffer.toString("utf8", 0, 4) === "RIFF" && buffer.toString("utf8", 8, 12) === "WEBP") {
+      extension = "webp";
+    }
     const fileName = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
     const filePath = path.join(outDir, fileName);
     fs.writeFileSync(filePath, buffer);
     const sizeMB = `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`;
-    const base64 = `data:image/${extension === "png" ? "png" : "jpeg"};base64,${buffer.toString("base64")}`;
+    const mimeSubtype = extension === "png" ? "png" : (extension === "webp" ? "webp" : "jpeg");
+    const base64 = `data:image/${mimeSubtype};base64,${buffer.toString("base64")}`;
     return { filePath, sizeMB, base64 };
   } catch (err) {
     console.warn("[MythicFrame BEI] Failed to save library asset to file:", err);
@@ -1592,7 +1597,8 @@ async function generateWithBEI(options) {
   const base64Data = result.image.replace(/^data:image\/\w+;base64,/, "");
   let buffer = Buffer.from(base64Data, "base64");
   const isPng = result.image.startsWith("data:image/png");
-  const extension = isPng ? "png" : "jpg";
+  const isWebp = result.image.startsWith("data:image/webp") || (buffer.length > 12 && buffer.toString("utf8", 0, 4) === "RIFF" && buffer.toString("utf8", 8, 12) === "WEBP");
+  const extension = isPng ? "png" : (isWebp ? "webp" : "jpg");
   const fileName = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
   const filePath = path.join(outDir, fileName);
   if (buffer.length < 500 * 1024 && quality !== "standard") {
@@ -2480,8 +2486,10 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
       } catch (e) {
       }
       const meta = beiRes.metadata || {};
-      const chatInfo = meta.chatName ? `Active Chat: ${meta.chatName}\n` : "";
-      const accountInfo = meta.email ? `Account: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}\n` : "";
+      const chatInfo = meta.chatName ? `Active Chat: ${meta.chatName}
+` : "";
+      const accountInfo = meta.email ? `Account: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}
+` : "";
       return {
         content: [{
           type: "text",
@@ -2538,8 +2546,10 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
         } catch (e) {
         }
         const meta = beiRes.metadata || {};
-        const chatInfo = meta.chatName ? `\nActive Chat: ${meta.chatName}` : "";
-        const accountInfo = meta.email ? `\nAccount: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}` : "";
+        const chatInfo = meta.chatName ? `
+Active Chat: ${meta.chatName}` : "";
+        const accountInfo = meta.email ? `
+Account: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}` : "";
         return {
           content: [{
             type: "text",
@@ -2581,8 +2591,10 @@ Please embed this image for the user, AND provide a clickable markdown link [${f
         } catch (e) {
         }
         const meta = beiRes.metadata || {};
-        const chatInfo = meta.chatName ? `\nActive Chat: ${meta.chatName}` : "";
-        const accountInfo = meta.email ? `\nAccount: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}` : "";
+        const chatInfo = meta.chatName ? `
+Active Chat: ${meta.chatName}` : "";
+        const accountInfo = meta.email ? `
+Account: ${meta.email}${meta.tier ? ` (${meta.tier})` : ""}` : "";
         return {
           content: [{
             type: "text",

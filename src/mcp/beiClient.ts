@@ -394,7 +394,8 @@ export async function saveLibraryAssetToFile(assetUrl: string, prefix = 'library
 
     if (assetUrl.startsWith('data:image/')) {
       const isPng = assetUrl.startsWith('data:image/png');
-      extension = isPng ? 'png' : 'jpg';
+      const isWebp = assetUrl.startsWith('data:image/webp');
+      extension = isPng ? 'png' : (isWebp ? 'webp' : 'jpg');
       const base64Data = assetUrl.replace(/^data:image\/\w+;base64,/, '');
       buffer = Buffer.from(base64Data, 'base64');
     } else {
@@ -407,12 +408,17 @@ export async function saveLibraryAssetToFile(assetUrl: string, prefix = 'library
       else if (ct.includes('webp')) extension = 'webp';
     }
 
+    if (buffer.length > 12 && buffer.toString('utf8', 0, 4) === 'RIFF' && buffer.toString('utf8', 8, 12) === 'WEBP') {
+      extension = 'webp';
+    }
+
     const fileName = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
     const filePath = path.join(outDir, fileName);
     fs.writeFileSync(filePath, buffer);
 
     const sizeMB = `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`;
-    const base64 = `data:image/${extension === 'png' ? 'png' : 'jpeg'};base64,${buffer.toString('base64')}`;
+    const mimeSubtype = extension === 'png' ? 'png' : (extension === 'webp' ? 'webp' : 'jpeg');
+    const base64 = `data:image/${mimeSubtype};base64,${buffer.toString('base64')}`;
     return { filePath, sizeMB, base64 };
   } catch (err) {
     console.warn('[MythicFrame BEI] Failed to save library asset to file:', err);
@@ -532,7 +538,8 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
   const base64Data = result.image.replace(/^data:image\/\w+;base64,/, '');
   let buffer = Buffer.from(base64Data, 'base64');
   const isPng = result.image.startsWith('data:image/png');
-  const extension = isPng ? 'png' : 'jpg';
+  const isWebp = result.image.startsWith('data:image/webp') || (buffer.length > 12 && buffer.toString('utf8', 0, 4) === 'RIFF' && buffer.toString('utf8', 8, 12) === 'WEBP');
+  const extension = isPng ? 'png' : (isWebp ? 'webp' : 'jpg');
   const fileName = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
   const filePath = path.join(outDir, fileName);
 

@@ -1422,9 +1422,11 @@
   function awaitPageFullSize(timeoutMs = 22000) {
     return new Promise((resolve) => {
       let done = false;
+      let toastCheckInterval = null;
       const finish = (result) => {
         if (done) return;
         done = true;
+        if (toastCheckInterval) clearInterval(toastCheckInterval);
         window.removeEventListener('message', onMsg);
         try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'DISARM_FULLSIZE' }, '*'); } catch (e) {}
         resolve(result);
@@ -1436,6 +1438,22 @@
       };
       window.addEventListener('message', onMsg);
       try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'ARM_FULLSIZE' }, '*'); } catch (e) {}
+
+      // Fast-fail: detect Gemini's native "Couldn't download image" toast/snackbar
+      toastCheckInterval = setInterval(() => {
+        try {
+          const toasts = document.querySelectorAll('mat-snack-bar-container, [role="alert"], .notification-toast, div[class*="snackbar"], div[class*="toast"]');
+          for (const t of toasts) {
+            const txt = (t.innerText || t.textContent || '').trim().toLowerCase();
+            if (txt.includes("couldn't download") || txt.includes("could not download") || txt.includes("failed to download") || txt.includes("تعذر تنزيل")) {
+              console.log('[MythicFrame BEI] Gemini native download failed server-side ("' + txt + '"). Immediately fast-failing to on-page fallback.');
+              finish({ success: false, dataUrl: '', reason: 'native_download_failed' });
+              return;
+            }
+          }
+        } catch (e) {}
+      }, 400);
+
       setTimeout(() => finish({ success: false, dataUrl: '' }), timeoutMs);
     });
   }
