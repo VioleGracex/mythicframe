@@ -141,19 +141,24 @@
   const SEND_BUTTON_SELECTORS = [
     "button[aria-label*='Send' i]",
     "button[aria-label*='Submit' i]",
-    "button[aria-label*='Ø¥Ø±Ø³Ø§Ù„' i]",
+    "button[aria-label*='إرسال' i]",
+    "button[aria-label*='Отправить' i]",
     "button[aria-label*='Envoyer' i]",
     "button[aria-label*='Enviar' i]",
     "button[aria-label*='Senden' i]",
     "button[data-tooltip*='Send' i]",
+    "button[data-tooltip*='Отправить' i]",
     "button[title*='Send' i]",
+    "button[title*='Отправить' i]",
     "button.send-button",
     "[data-test-id='send-button']",
     "[data-testid='send-button']",
     "button.mat-mdc-icon-button[aria-label*='Send' i]",
-    "button.mat-mdc-icon-button[aria-label*='Ø¥Ø±Ø³Ø§Ù„' i]",
+    "button.mat-mdc-icon-button[aria-label*='Отправить' i]",
+    "button.mat-mdc-icon-button[aria-label*='إرسال' i]",
     ".input-area button[aria-label*='Send' i]",
-    ".input-area button[aria-label*='Ø¥Ø±Ø³Ø§Ù„' i]",
+    ".input-area button[aria-label*='Отправить' i]",
+    ".input-area button[aria-label*='إرسال' i]",
     "button:has(mat-icon[data-mat-icon-name='send'])",
     "button:has(svg.send-icon)",
     ".send-button-container button"
@@ -204,7 +209,13 @@
     /not allowed to generate/i,
     /i am unable to assist with/i,
     /safety reasons/i,
-    /restricted content/i
+    /restricted content/i,
+    /не уда(?:лось|ется) создать/i,
+    /не уда(?:лось|ется) сгенерировать/i,
+    /нарушает политик/i,
+    /правила безопасности/i,
+    /не могу создать/i,
+    /не могу сгенерировать/i
   ];
 
   const GEMINI_RATE_LIMIT_PATTERNS = [
@@ -216,8 +227,17 @@
     /usage limit reached/i,
     /daily limit reached/i,
     /limit reached/i,
+    /as soon as your limit resets/i,
+    /until your limit resets/i,
+    /limit resets/i,
+    /reached the limit/i,
+    /hit your limit/i,
     /too many requests/i,
-    /temporarily unavailable/i
+    /temporarily unavailable/i,
+    /достигнут дневной лимит/i,
+    /превышен лимит/i,
+    /повторите попытку позже/i,
+    /лимит исчерпан/i
   ];
 
   const GEMINI_CANCELLATION_PATTERNS = [
@@ -226,7 +246,10 @@
     /generation was stopped/i,
     /response was stopped/i,
     /stopped generating/i,
-    /stopped response/i
+    /stopped response/i,
+    /генерация остановлена/i,
+    /ответ остановлен/i,
+    /создание остановлено/i
   ];
 
   const GEMINI_TIER_RESTRICTION_PATTERNS = [
@@ -244,6 +267,12 @@
 
   const STOP_BUTTON_SELECTORS = [
     "button[aria-label*='Stop' i]",
+    "button[aria-label*='Остановить' i]",
+    "button[aria-label*='Стоп' i]",
+    "button[mattooltip*='Остановить' i]",
+    "button[mattooltip*='Стоп' i]",
+    "[aria-label*='Остановить ответ' i]",
+    "[aria-label*='Остановить генерацию' i]",
     "button[aria-label*='Ø¥ÙŠÙ‚Ø§Ù' i]",
     "button[data-test-id*='stop']",
     "button[mattooltip*='Stop' i]",
@@ -339,8 +368,12 @@
       const stopBtn = getStopButton();
       if (stopBtn) return true;
 
-      const shimmerEl = document.querySelector('.shimmer, .loading, mat-progress-bar, mat-progress-spinner, [aria-label*="creating" i], [aria-label*="loading" i], [role="progressbar"]');
-      if (shimmerEl && shimmerEl.offsetParent !== null) return true;
+      // Only check shimmer/progress indicators inside active conversation turns or main chat stream
+      const chatContainer = document.querySelector('chat-window, .chat-history, main, [role="main"]');
+      if (chatContainer) {
+        const shimmerEl = chatContainer.querySelector('model-response .shimmer, model-response .loading, model-response mat-progress-bar, model-response mat-progress-spinner, model-response [role="progressbar"], .response-container [role="progressbar"]');
+        if (shimmerEl && shimmerEl.offsetParent !== null) return true;
+      }
 
       return false;
     } catch (e) {
@@ -422,8 +455,8 @@
         const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
         const text = (btn.textContent || '').trim().toLowerCase();
         const html = btn.innerHTML.toLowerCase();
-        const isSendWord = aria.includes('send') || aria.includes('submit') || aria.includes('Ø¥Ø±Ø³Ø§Ù„') ||
-                           text.includes('send') || text.includes('submit') || text.includes('Ø¥Ø±Ø³Ø§Ù„');
+        const isSendWord = aria.includes('send') || aria.includes('submit') || aria.includes('отправить') || aria.includes('Ø¥Ø±Ø³Ø§Ù„') ||
+                           text.includes('send') || text.includes('submit') || text.includes('отправить') || text.includes('Ø¥Ø±Ø³Ø§Ù„');
         const hasSendIcon = html.includes('send') || html.includes('arrow_forward') || html.includes('arrow_upward') ||
                             btn.querySelector('mat-icon[fonticon*="send"], [data-mat-icon-name*="send"], svg path');
         if (isSendWord || hasSendIcon) {
@@ -649,6 +682,7 @@
     if (!targetQuality) return;
     try {
       const q = String(targetQuality).trim().toLowerCase();
+      if (q === 'auto' || q === 'default') return;
       console.log(`[MythicFrame BEI] Selecting native model quality / thinking depth: ${q}...`);
 
       // 1. Locate Model / Thinking depth button under/around composer or navigation
@@ -714,6 +748,7 @@
       if (remainingOverlay) {
         remainingOverlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       }
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
     } catch (err) {
       console.warn('[MythicFrame BEI] selectNativeModelQuality notice:', err);
     }
@@ -1031,14 +1066,12 @@
       if (input.closest('header, nav, [role="navigation"], bard-user-menu, .gb_d, [href*="myaccount.google.com"], [aria-label*="Google Account" i]')) {
         continue;
       }
-      const name = (input.getAttribute('name') || '').toLowerCase();
-      if (name === 'filedata') continue;
       return input;
     }
     return null;
   }
 
-  async function waitForAttachmentUploadComplete(expectedCount = 1, maxWaitMs = 150000, jobId = null) {
+  async function waitForAttachmentUploadComplete(expectedCount = 1, maxWaitMs = 10000, jobId = null) {
     const startTime = Date.now();
     let consecutiveReadyChecks = 0;
     let errorStartTime = null;
@@ -1211,9 +1244,11 @@
       try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'ARM_SUPPRESS_FILE_PICKER' }, '*'); } catch (e) {}
       const origFileInputClick = HTMLInputElement.prototype.click;
       let hookSuppressed = true;
+      let capturedFileInput = null;
       HTMLInputElement.prototype.click = function () {
         if (hookSuppressed && this.type === 'file') {
-          console.log('[MythicFrame BEI] Suppressed native file picker click dialog during automated attachment.');
+          console.log('[MythicFrame BEI] Suppressed native file picker click dialog and captured file input reference.');
+          capturedFileInput = this;
           return;
         }
         return origFileInputClick.apply(this, arguments);
@@ -1229,14 +1264,33 @@
           for (const btn of attachBtns) {
             try {
               btn.click();
-              await new Promise(r => setTimeout(r, 250));
-              // Dismiss menu by pressing Escape to keep any mounted file input in DOM without clicking dialog options
+              await new Promise(r => setTimeout(r, 300));
+              
+              // Find and click the 'Upload' or 'Files' menu item to trigger input mount / click
+              const menuItems = Array.from(document.querySelectorAll(
+                ".cdk-overlay-pane [role='menuitem'], [role='menu'] button, [role='menu'] [role='menuitem'], mat-dialog-container button, .mat-mdc-menu-item"
+              ));
+              const uploadItem = menuItems.find(m => {
+                const txt = (m.textContent || '').toLowerCase();
+                const aria = (m.getAttribute('aria-label') || '').toLowerCase();
+                return txt.includes('upload') || txt.includes('file') || txt.includes('computer') ||
+                       aria.includes('upload') || aria.includes('file') || aria.includes('computer');
+              });
+
+              if (uploadItem) {
+                uploadItem.click();
+                await new Promise(r => setTimeout(r, 300));
+              }
+
+              // Dismiss menu
               document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
               break;
             } catch (e) {}
           }
 
-          fileInput = findGeminiFileInput();
+          fileInput = capturedFileInput || findGeminiFileInput();
+        } else if (capturedFileInput) {
+          fileInput = capturedFileInput;
         }
 
         // Step 2: Assign files directly to fileInput
@@ -1258,39 +1312,56 @@
         }, 4000);
       }
 
-      // Step 3: Multi-target HTML5 Drag & Drop sequence
-      const dropTargets = [
-        composer,
-        composer.closest('rich-textarea') || composer,
-        composer.closest('.input-area') || composer,
-        composer.closest('.chat-input-container') || composer,
-        composer.closest('form') || composer,
-        document.querySelector('.input-area') || composer,
-        document.querySelector('.chat-input-container') || composer,
-        document.querySelector('rich-textarea') || composer,
-        document.querySelector('main') || document.body
-      ].filter(Boolean);
+      // Check if file input already successfully initiated upload / chips before running fallback
+      const getDetectedImageChips = () => {
+        return Array.from(document.querySelectorAll(
+          "[data-test-id*='attachment'], [data-test-id*='file'], .attachment-card, [class*='attachment'], [class*='uploader-preview'], [class*='file-preview']"
+        )).filter(c => !c.closest('header, nav, [role="navigation"]')).filter(c => {
+          const t = (c.textContent || '').toLowerCase();
+          return !t.includes('create image') && !t.includes('canvas') && !t.includes('deep research');
+        });
+      };
 
-      for (const target of dropTargets) {
+      // Wait briefly to allow Angular to mount file input attachment chips
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, 150));
+        const chips = getDetectedImageChips();
+        if (chips.length >= files.length) {
+          console.log(`[MythicFrame BEI] Attachment verified via file input (${chips.length} chip(s)). Skipping drag/paste fallback to prevent duplicate uploads.`);
+          break;
+        }
+      }
+
+      let currentChips = getDetectedImageChips();
+
+      // Step 3: ONLY fallback to HTML5 Drag & Drop if file input did NOT mount any image chips
+      if (currentChips.length < files.length) {
+        console.log('[MythicFrame BEI] File input did not attach chips. Attempting Drag & Drop fallback...');
+        const dropTarget = composer.closest('rich-textarea') || composer.closest('.input-area') || composer;
         try {
-          target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt }));
-          target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
-          target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+          dropTarget.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt }));
+          dropTarget.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+          dropTarget.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 400));
+        currentChips = getDetectedImageChips();
+      }
+
+      // Step 4: ONLY fallback to Clipboard paste if still missing chips
+      if (currentChips.length < files.length) {
+        console.log('[MythicFrame BEI] Drag & Drop did not attach chips. Attempting Clipboard paste fallback...');
+        try {
+          composer.focus();
+          composer.dispatchEvent(new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: dt
+          }));
         } catch (e) {}
       }
 
-      // Step 4: ClipboardEvent paste on focused composer
-      try {
-        composer.focus();
-        composer.dispatchEvent(new ClipboardEvent('paste', {
-          bubbles: true,
-          cancelable: true,
-          clipboardData: dt
-        }));
-      } catch (e) {}
-
       console.log(`[MythicFrame BEI] Dispatched ${files.length} reference image(s) to Gemini. Monitoring upload...`);
-      const uploadOk = await waitForAttachmentUploadComplete(files.length, maxUploadWaitMs, jobId);
+      const uploadOk = await waitForAttachmentUploadComplete(files.length, 10000, jobId);
       return uploadOk;
     } catch (e) {
       console.warn('[MythicFrame BEI] Error attaching reference images to Gemini:', e);
@@ -1337,26 +1408,35 @@
 
       // Check 3: Reference image attachment cards verification
       if (expectedImagesCount > 0) {
-        const chips = Array.from(document.querySelectorAll(
-          "[data-test-id*='attachment'], [data-test-id*='file'], .attachment-card, [class*='attachment'], [class*='uploader-preview'], [class*='file-preview']"
+        const composer = getComposerElement();
+        const inputContainer = composer ? (composer.closest('.bottom-container, .input-area, .chat-input-container, form, main') || composer.parentElement || document.body) : document.body;
+
+        const chips = Array.from(inputContainer.querySelectorAll(
+          "[data-test-id*='attachment'], [data-test-id*='file'], mat-chip, mat-chip-row, .attachment-card, [class*='attachment'], [class*='uploader-preview'], [class*='file-preview'], [class*='image-preview'], [class*='thumbnail-wrapper'], [class*='media-preview'], [class*='preview-item'], xap-file-preview, xap-media-preview"
         )).filter(c => !c.closest('header, nav, [role="navigation"]'));
 
-        const imageChips = chips.filter(c => {
+        let imageChips = chips.filter(c => {
           const t = (c.textContent || '').toLowerCase();
           return !t.includes('create image') && !t.includes('canvas') && !t.includes('deep research');
         });
 
-        // Hard gate: Ensure the expected number of image chips actually exist!
-        if (imageChips.length < expectedImagesCount) {
+        // Also check for direct thumbnail images rendered in inputContainer
+        const composerImgs = Array.from(inputContainer.querySelectorAll('img')).filter(img => {
+          if (img.closest('header, nav, [role="navigation"], bard-user-menu, .gb_d, button[aria-label*="account" i]')) return false;
+          return (img.src || '').startsWith('blob:') || (img.src || '').startsWith('data:') || (img.src || '').includes('googleusercontent.com');
+        });
+
+        const effectiveCount = Math.max(imageChips.length, composerImgs.length);
+
+        // Hard gate: Ensure the expected number of image chips actually exist, or fallback gracefully
+        if (effectiveCount < expectedImagesCount) {
           console.warn('[MythicFrame BEI Verification] Missing image attachment chip in composer. Attempting retry...');
-          if (attempt === 2) {
-            return {
-              ok: false,
-              reason: 'Reference image was not attached to Gemini Web composer. Upload did not take effect.'
-            };
+          if (attempt < 2) {
+            await new Promise(r => setTimeout(r, 1000));
+            continue;
+          } else {
+            console.warn('[MythicFrame BEI Verification] Proceeding with prompt dispatch despite unmounted attachment chip.');
           }
-          await new Promise(r => setTimeout(r, 1000));
-          continue;
         }
 
         // Only detect genuine, visible progress indicators (exclude hidden skeleton placeholders)
@@ -1641,10 +1721,23 @@
 
     // Only if absolutely no model turn exists and prompt was not submitted
     console.log(`[MythicFrame BEI Recovery] No model response detected. Re-dispatching prompt...`);
-    return executePrompt(jobId, prompt, 900, images, quality, aspectRatio, modelQuality);
+    return executePrompt(jobId, prompt, 150, images, quality, aspectRatio, modelQuality);
   }
 
-  async function executePrompt(jobId, prompt, timeoutSeconds = 900, images = [], quality = "ultra_original", aspectRatio = "1:1", modelQuality = "auto") {
+  async function executePrompt(jobId, prompt, timeoutSeconds = 150, images = [], quality = "ultra_original", aspectRatio = "1:1", modelQuality = "auto", retryCount = 0, chatSessionMode = "same_chat") {
+    // Deduplication guard: ignore redundant dispatches for the exact same active jobId
+    if (activeRunningJobId === jobId && (window.__MYTHIC_BEI_ACTIVE_INTERVAL__)) {
+      console.log(`[MythicFrame BEI] Job ${jobId} is already in-flight on this tab. Ignoring duplicate dispatch.`);
+      return;
+    }
+
+    // Terminate any stale background polling interval from previous runs to prevent duplicate loops
+    if (window.__MYTHIC_BEI_ACTIVE_INTERVAL__) {
+      clearInterval(window.__MYTHIC_BEI_ACTIVE_INTERVAL__);
+      window.__MYTHIC_BEI_ACTIVE_INTERVAL__ = null;
+    }
+
+    activeRunningJobId = jobId;
     ensureBackgroundCpuAwake();
     let keepAlivePort = null;
     try {
@@ -1670,6 +1763,17 @@
       return;
     }
 
+    // Only if chatSessionMode === 'new_chat' and currently in an existing conversation thread, start a clean chat!
+    if (chatSessionMode === 'new_chat' && window.location.pathname.match(/\/app\/[a-zA-Z0-9_-]{8,}/)) {
+      const newChatBtn = document.querySelector('button[aria-label*="New chat" i], a[aria-label*="New chat" i], [data-test-id="new-chat-button"], a[href="/app"], a[href*="/app"]');
+      if (newChatBtn) {
+        console.log('[MythicFrame BEI] In existing chat thread. Clicking New Chat button to reset composer...');
+        newChatBtn.click();
+        await new Promise(r => setTimeout(r, 1500));
+        composer = await waitForComposer(10000) || composer;
+      }
+    }
+
     // Always clear the composer of any previous dirty text or failed attachment chips before starting!
     reportProgress(jobId, 'clearing', 'Preparing pristine composer...');
     clearComposer();
@@ -1682,38 +1786,15 @@
       promptToSend = `Create image: ${promptToSend}`;
     }
 
-    // 1. Tag "Create image" or active mode tag first - and select aspect ratio if in menu
-    reportProgress(jobId, 'create_image_mode', `Activating native "Create image" tool mode (AR: ${aspectRatio || '1:1'})...`);
-    await ensureCreateImageMode(jobId, aspectRatio || '1:1');
-    await new Promise(r => setTimeout(r, 600));
-
-    // 2. Select native model quality / thinking depth if requested
-    if (modelQuality && modelQuality !== 'default') {
-      await selectNativeModelQuality(modelQuality);
-      await new Promise(r => setTimeout(r, 350));
-    }
-
-    // 3. Attach reference image(s) if any exist, waiting for upload to fully complete
+    // 1. Attach reference image(s) FIRST if any exist, waiting for upload to fully complete
     if (images && images.length > 0) {
-      reportProgress(jobId, 'uploading_references', `Uploading reference image(s) (1/${images.length})...`);
-      const maxUploadWait = Math.max((timeoutSeconds || 900) * 1000, 600000);
+      const maxUploadWait = Math.max((timeoutSeconds || 150) * 1000, 120000);
       const uploadSuccess = await attachReferenceImages(images, composer, jobId, maxUploadWait);
       if (!uploadSuccess) {
-        clearComposer();
-        if (keepAlivePort) keepAlivePort.disconnect();
-        try {
-          chrome.runtime.sendMessage({
-            type: 'GENERATION_FAILED',
-            data: {
-              jobId,
-              error: 'Reference image upload failed in Gemini Web (upload was rejected or timed out). The composer was cleared. Please check image format or retry.'
-            }
-          });
-        } catch (e) {}
-        return;
+        console.warn('[MythicFrame BEI] Reference image upload did not attach to composer. Proceeding with text prompt...');
       }
 
-      // Crucial: Wait 800ms for Angular DOM stabilization after reference card attaches
+      // Crucial: Wait for Angular DOM stabilization after reference card attaches
       await new Promise(r => setTimeout(r, 800));
     }
 
@@ -1727,11 +1808,21 @@
       }
     }
 
-    // Re-verify "Create image" tag in case file upload reset it
-    if (!isCreateImageTagActive()) {
-      console.log('[MythicFrame BEI] "Create image" tag missing after attachment. Re-activating...');
-      await ensureCreateImageMode(jobId, aspectRatio || '1:1');
-      await new Promise(r => setTimeout(r, 400));
+    // 2. NOW activate native "Create image" tool mode and select native aspect ratio AFTER upload
+    reportProgress(jobId, 'create_image_mode', `Activating native "Create image" tool mode (AR: ${aspectRatio || '1:1'})...`);
+    await ensureCreateImageMode(jobId, aspectRatio || '1:1');
+    await new Promise(r => setTimeout(r, 500));
+
+    // Re-verify aspect ratio explicitly
+    if (aspectRatio) {
+      await selectNativeAspectRatio(aspectRatio);
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    // 3. Select native model quality / thinking depth if requested (skip auto and default)
+    if (modelQuality && modelQuality !== 'default' && modelQuality !== 'auto') {
+      await selectNativeModelQuality(modelQuality);
+      await new Promise(r => setTimeout(r, 350));
     }
 
     // 4. Inject prompt text into the fresh composer
@@ -1768,6 +1859,8 @@
     protocol.getAllImagesRecursively(document.body).forEach(img => {
       if (img.src) existingImages.add(img.src);
       if (img.currentSrc) existingImages.add(img.currentSrc);
+      const attrSrc = img.getAttribute('src');
+      if (attrSrc) existingImages.add(attrSrc);
     });
 
     const existingUrls = new Set();
@@ -1794,7 +1887,7 @@
     );
 
     // Track baseline model responses so we NEVER inspect previous turns or user turns
-    const baselineModelResponses = Array.from(document.querySelectorAll('model-response, [data-test-id*="model-response"]'))
+    const baselineModelResponses = Array.from(document.querySelectorAll('model-response, message-content, [data-test-id*="model-response"], [data-test-id*="response"], .model-response-text, .response-container, conversation-turn'))
       .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
     const baselineResponseCount = baselineModelResponses.length;
 
@@ -1835,7 +1928,7 @@
 
     // Observe mutations and polls for generated images
     const startTime = Date.now();
-    const timeoutMs = (timeoutSeconds || 900) * 1000;
+    const timeoutMs = (timeoutSeconds || 150) * 1000;
     let lastHeartbeatTime = Date.now();
     let imageDelivered = false;
     let jobCancelled = false;
@@ -1845,7 +1938,12 @@
       jobCancelled = true;
       activeRunningJobId = null;
       activeCancelHandler = null;
-      clearInterval(checkInterval);
+      if (window.__MYTHIC_BEI_ACTIVE_INTERVAL__ === checkInterval) {
+        clearInterval(checkInterval);
+        window.__MYTHIC_BEI_ACTIVE_INTERVAL__ = null;
+      } else {
+        clearInterval(checkInterval);
+      }
       if (keepAlivePort) keepAlivePort.disconnect();
       clickStopButton();
       clearComposer();
@@ -1870,7 +1968,12 @@
       imageDelivered = true;
       activeRunningJobId = null;
       activeCancelHandler = null;
-      clearInterval(checkInterval);
+      if (window.__MYTHIC_BEI_ACTIVE_INTERVAL__ === checkInterval) {
+        clearInterval(checkInterval);
+        window.__MYTHIC_BEI_ACTIVE_INTERVAL__ = null;
+      } else {
+        clearInterval(checkInterval);
+      }
       if (keepAlivePort) keepAlivePort.disconnect();
 
       reportProgress(jobId, 'capturing_image', 'Generated artwork detected! Extracting high-resolution asset...');
@@ -2050,6 +2153,9 @@
       try {
         if (imageDelivered || jobCancelled) {
           clearInterval(checkInterval);
+          if (window.__MYTHIC_BEI_ACTIVE_INTERVAL__ === checkInterval) {
+            window.__MYTHIC_BEI_ACTIVE_INTERVAL__ = null;
+          }
           return;
         }
 
@@ -2063,10 +2169,19 @@
           reportProgress(jobId, 'generating', `Gemini is rendering image (${elapsedSec}s elapsed)...`);
         }
 
-        if (elapsed > timeoutMs) {
-          // If Gemini is still actively generating (Stop button is present or progress indicator visible),
-          // allow up to 30s grace period, but do not hang indefinitely.
-          if (isGeminiActivelyGenerating() && elapsed < timeoutMs + 30000) {
+        const currentModelResponses = Array.from(document.querySelectorAll('model-response, message-content, [data-test-id*="model-response"], [data-test-id*="response"], .model-response-text, .response-container, conversation-turn'))
+          .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
+
+        const isActivelyGenerating = isGeminiActivelyGenerating();
+        // Detect if stuck with no output:
+        // 1. Elapsed > 180s and Gemini stopped generating without producing any response container
+        // 2. OR elapsed exceeds timeoutMs (default 150s)
+        const isStalledNoOutput = (elapsed > 180000 && !isActivelyGenerating && currentModelResponses.length <= baselineResponseCount);
+        const isTimedOut = elapsed > timeoutMs;
+
+        if (isTimedOut || isStalledNoOutput) {
+          // If Gemini is still actively generating and within a 20s grace period of timeout, wait briefly
+          if (isActivelyGenerating && elapsed < timeoutMs + 20000 && !isStalledNoOutput) {
             return;
           }
 
@@ -2083,17 +2198,38 @@
               if (isUserAttachedImage(cImg)) continue;
               const cSrc = cImg.currentSrc || cImg.src;
               if (cSrc && (protocol.isGeneratedImage(cImg) || cSrc.includes('googleusercontent.com'))) {
-                console.log(`[MythicFrame BEI] Caught generated image during pre-timeout sweep (Job: ${jobId}, Conv ID: ${finalConvId})!`);
+                console.log(`[MythicFrame BEI] Caught generated image during sweep (Job: ${jobId}, Conv ID: ${finalConvId})!`);
                 await deliverImage(cImg, cImg.naturalWidth || 1024, cImg.naturalHeight || 1024);
                 return;
               }
             }
             const turnUrls = protocol.extractImageUrlsFromNode(turn);
             if (turnUrls && turnUrls.length > 0) {
-              console.log(`[MythicFrame BEI] Caught generated image URL during pre-timeout sweep (Job: ${jobId}, Conv ID: ${finalConvId})!`);
+              console.log(`[MythicFrame BEI] Caught generated image URL during sweep (Job: ${jobId}, Conv ID: ${finalConvId})!`);
               await deliverImage(turnUrls[0]);
               return;
             }
+          }
+
+          // AUTO-STOP & RETRY MECHANISM:
+          // When stuck with no output or timeout, automatically stop response and retry in a clean composer
+          if (retryCount < 1) {
+            console.warn(`[MythicFrame BEI] Generation stuck with no output (${Math.round(elapsed / 1000)}s). Stopping response and auto-retrying...`);
+            clearInterval(checkInterval);
+            if (window.__MYTHIC_BEI_ACTIVE_INTERVAL__ === checkInterval) {
+              window.__MYTHIC_BEI_ACTIVE_INTERVAL__ = null;
+            }
+            activeRunningJobId = null;
+            activeCancelHandler = null;
+            if (keepAlivePort) keepAlivePort.disconnect();
+
+            clickStopButton();
+            reportProgress(jobId, 'stopping_stuck', `Stuck with no output after ${Math.round(elapsed / 1000)}s. Stopped response; clearing composer and retrying (attempt 2/2)...`);
+            await new Promise(r => setTimeout(r, 600));
+            clearComposer();
+            await new Promise(r => setTimeout(r, 500));
+
+            return executePrompt(jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality, retryCount + 1);
           }
 
           let lastTurnMessageId = null;
@@ -2103,6 +2239,9 @@
           }
 
           clearInterval(checkInterval);
+          if (window.__MYTHIC_BEI_ACTIVE_INTERVAL__ === checkInterval) {
+            window.__MYTHIC_BEI_ACTIVE_INTERVAL__ = null;
+          }
           activeRunningJobId = null;
           activeCancelHandler = null;
           if (keepAlivePort) keepAlivePort.disconnect();
@@ -2113,7 +2252,7 @@
               type: 'GENERATION_FAILED',
               data: {
                 jobId,
-                error: `Generation timed out after ${timeoutSeconds}s waiting for Gemini Web response (Conversation ID: ${finalConvId || 'current'}, Message ID: ${lastTurnMessageId || 'none'}).`,
+                error: `Generation stuck with no output after ${Math.round(elapsed / 1000)}s in Gemini Web (attempt ${retryCount + 1}). Stopped response and cleared composer.`,
                 conversationId: finalConvId,
                 messageId: lastTurnMessageId
               }
@@ -2123,14 +2262,17 @@
         }
 
         // Tier 1: Check ONLY model responses created for this turn (strictly > baselineResponseCount)
-        const currentModelResponses = Array.from(document.querySelectorAll('model-response, [data-test-id*="model-response"]'))
-          .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
 
         const latestResponse = currentModelResponses.length > baselineResponseCount
           ? currentModelResponses[currentModelResponses.length - 1]
           : null;
 
         if (latestResponse) {
+          // If Gemini is still actively generating the model response, wait for it to finish!
+          if (isModelResponseGenerating(latestResponse) || isGeminiActivelyGenerating()) {
+            return;
+          }
+
           // 1A: First, check if latest model response already has a completed generated image
           const respImages = protocol.getAllImagesRecursively(latestResponse);
           for (const img of respImages) {
@@ -2200,6 +2342,35 @@
                 await deliverImage(img, img.naturalWidth || 1024, img.naturalHeight || 1024);
                 return;
               }
+            }
+          }
+        }
+
+        // Tier 2.5: Global High-Fidelity Sweep: Catch ANY new generated image or URL on document.body ONLY after generation is complete and a new response container exists
+        if (!isActivelyGenerating && currentModelResponses.length > baselineResponseCount) {
+          const allNewImages = protocol.getAllImagesRecursively(document.body);
+          for (const img of allNewImages) {
+            if (isUserAttachedImage(img)) continue;
+            const src = img.currentSrc || img.src;
+            if (!src || existingImages.has(src)) continue;
+
+            if (protocol.isGeneratedImage(img)) {
+              const hasDimension = (img.naturalWidth > 120 || img.naturalHeight > 120);
+              const isDirectCdnOrBlob = src && (src.includes('googleusercontent.com') || src.startsWith('blob:') || src.startsWith('data:image/'));
+              if (hasDimension || isDirectCdnOrBlob || img.complete) {
+                console.log(`[MythicFrame BEI] Caught newly generated image via global sweep (${src.substring(0, 60)}...)!`);
+                await deliverImage(img, img.naturalWidth || 1024, img.naturalHeight || 1024);
+                return;
+              }
+            }
+          }
+
+          const allNewUrls = protocol.extractImageUrlsFromNode(document.body);
+          for (const u of allNewUrls) {
+            if (!existingUrls.has(u)) {
+              console.log(`[MythicFrame BEI] Caught newly generated image URL via global sweep (${u.substring(0, 60)}...)!`);
+              await deliverImage(u);
+              return;
             }
           }
         }
@@ -2537,8 +2708,8 @@
   // CustomEvent listener for direct dispatch from executeScript
   window.addEventListener('__MYTHIC_BEI_EXECUTE_PROMPT__', (e) => {
     if (e.detail) {
-      const { jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality } = e.detail;
-      executePrompt(jobId, prompt, timeoutSeconds, images, quality || 'ultra_original', aspectRatio || '1:1', modelQuality || 'auto');
+      const { jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality, chatSessionMode } = e.detail;
+      executePrompt(jobId, prompt, timeoutSeconds, images, quality || 'ultra_original', aspectRatio || '1:1', modelQuality || 'auto', 0, chatSessionMode || 'same_chat');
     }
   });
 
@@ -2550,6 +2721,11 @@
   }
 
   const messageListener = (request, sender, sendResponse) => {
+    if (request.action === 'PING') {
+      sendResponse({ pong: true, success: true });
+      return true;
+    }
+
     if (request.action === 'GET_TAB_INFO') {
       const email = extractGoogleAccountEmail();
       const slot = protocol.extractGeminiAccountSlot(window.location.href);
@@ -2595,8 +2771,8 @@
     }
 
     if (request.action === 'EXECUTE_PROMPT') {
-      const { jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality } = request.data || {};
-      executePrompt(jobId, prompt, timeoutSeconds, images, quality || 'ultra_original', aspectRatio || '1:1', modelQuality || 'auto');
+      const { jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality, chatSessionMode } = request.data || {};
+      executePrompt(jobId, prompt, timeoutSeconds, images, quality || 'ultra_original', aspectRatio || '1:1', modelQuality || 'auto', 0, chatSessionMode || 'same_chat');
       sendResponse({ success: true, started: true });
       return true;
     }
@@ -2668,34 +2844,32 @@
           const hasProgressBar = Boolean(document.querySelector('.loading, .shimmer, mat-progress-bar, mat-progress-spinner, [role="progressbar"]'));
           const isGenerating = Boolean(stopBtn || hasProgressBar);
 
-          // Strict provenance: Only harvest if there is an active job running on this tab!
+          // Harvest from latest model turn
           const candidates = [];
-          if (activeRunningJobId) {
-            const modelResponses = Array.from(document.querySelectorAll('model-response, [data-test-id*="model-response"]'))
-              .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
-            if (modelResponses.length > 0) {
-              const latestTurn = modelResponses[modelResponses.length - 1];
-              const imgs = protocol.getAllImagesRecursively ? protocol.getAllImagesRecursively(latestTurn) : Array.from(latestTurn.querySelectorAll('img'));
-              for (let i = imgs.length - 1; i >= 0; i--) {
-                const img = imgs[i];
-                if (isUserAttachedImage(img)) continue;
-                const src = img.src || img.getAttribute('data-src') || '';
-                if (!src) continue;
-                if (src.includes('/a/') || src.includes('=s32') || src.includes('=s64') || src.includes('=s96')) continue;
-                if (protocol.isGeneratedImage && protocol.isGeneratedImage(img)) {
-                  const highResUrl = protocol.getHighResImageUrl ? protocol.getHighResImageUrl(src) : src;
-                  const base64 = protocol.imageToBase64 ? await protocol.imageToBase64(img).catch(() => null) : null;
-                  candidates.push({
-                    src,
-                    highResUrl,
-                    base64: base64 || src,
-                    alt: img.alt || img.getAttribute('aria-label') || '',
-                    width: img.naturalWidth || 1024,
-                    height: img.naturalHeight || 1024,
-                    jobId: activeRunningJobId
-                  });
-                  break; // Take the latest generated image from active turn
-                }
+          const modelResponses = Array.from(document.querySelectorAll('model-response, [data-test-id*="model-response"]'))
+            .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
+          if (modelResponses.length > 0) {
+            const latestTurn = modelResponses[modelResponses.length - 1];
+            const imgs = protocol.getAllImagesRecursively ? protocol.getAllImagesRecursively(latestTurn) : Array.from(latestTurn.querySelectorAll('img'));
+            for (let i = imgs.length - 1; i >= 0; i--) {
+              const img = imgs[i];
+              if (isUserAttachedImage(img)) continue;
+              const src = img.src || img.getAttribute('data-src') || '';
+              if (!src) continue;
+              if (src.includes('/a/') || src.includes('=s32') || src.includes('=s64') || src.includes('=s96')) continue;
+              if (protocol.isGeneratedImage && protocol.isGeneratedImage(img)) {
+                const highResUrl = protocol.getHighResImageUrl ? protocol.getHighResImageUrl(src) : src;
+                const base64 = protocol.imageToBase64 ? await protocol.imageToBase64(img).catch(() => null) : null;
+                candidates.push({
+                  src,
+                  highResUrl,
+                  base64: base64 || src,
+                  alt: img.alt || img.getAttribute('aria-label') || '',
+                  width: img.naturalWidth || 1024,
+                  height: img.naturalHeight || 1024,
+                  jobId: activeRunningJobId || 'harvested'
+                });
+                break; // Take the latest generated image from active turn
               }
             }
           }

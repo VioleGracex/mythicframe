@@ -19,6 +19,36 @@ export function maskEmail(email?: string): string {
 const AUDIT_LOG_DIR = path.join(os.homedir(), 'Documents', 'MythicFrame', 'logs');
 const AUDIT_LOG_FILE = path.join(AUDIT_LOG_DIR, 'bei_session_audit.log');
 
+const LOCAL_LOG_DIR = path.join(process.cwd(), 'logs');
+const LOCAL_SESSION_DIR = path.join(LOCAL_LOG_DIR, 'sessions');
+const LOCAL_AUDIT_LOG_FILE = path.join(LOCAL_LOG_DIR, 'bei_session_audit.log');
+
+export function saveJobSessionRecord(jobId: string, record: Record<string, any>) {
+  try {
+    if (!fs.existsSync(LOCAL_SESSION_DIR)) {
+      fs.mkdirSync(LOCAL_SESSION_DIR, { recursive: true });
+    }
+    const sessionFile = path.join(LOCAL_SESSION_DIR, `${jobId}.json`);
+    let existing: Record<string, any> = {};
+    if (fs.existsSync(sessionFile)) {
+      try {
+        existing = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+      } catch (e) {}
+    }
+    const merged: Record<string, any> = {
+      ...existing,
+      ...record,
+      updatedAt: new Date().toISOString()
+    };
+    if (!merged['createdAt']) {
+      merged['createdAt'] = new Date().toISOString();
+    }
+    fs.writeFileSync(sessionFile, JSON.stringify(merged, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[MythicFrame BEI Bridge] Failed to save session record:', err);
+  }
+}
+
 export function writeSessionAuditLog(entry: {
   event: string;
   target?: string;
@@ -45,6 +75,23 @@ export function writeSessionAuditLog(entry: {
 
     const logLine = `[${timestamp}] [${entry.event}] ${slotStr}${emailStr}${tabStr}${batchStr}${jobStr}${detailsStr}\n`;
     fs.appendFileSync(AUDIT_LOG_FILE, logLine, 'utf8');
+    try {
+      if (!fs.existsSync(LOCAL_LOG_DIR)) {
+        fs.mkdirSync(LOCAL_LOG_DIR, { recursive: true });
+      }
+      fs.appendFileSync(LOCAL_AUDIT_LOG_FILE, logLine, 'utf8');
+    } catch (e) {}
+    if (entry.jobId) {
+      saveJobSessionRecord(entry.jobId, {
+        lastEvent: entry.event,
+        lastDetails: entry.details,
+        target: entry.target,
+        accountSlot: entry.accountSlot,
+        email: entry.email,
+        tabId: entry.tabId,
+        ...(entry.data || {})
+      });
+    }
   } catch (err) {
     console.warn('[MythicFrame BEI Bridge] Failed to append to session audit log:', err);
   }
@@ -90,6 +137,9 @@ export interface BEIPayloadStatus {
   candidates?: string[];
   tabUrl?: string;
   accountSlot?: number;
+  chatName?: string;
+  email?: string;
+  tier?: string;
   error?: string;
   steps: Array<{ step: string; detail: string; timestamp: number }>;
 }
@@ -711,6 +761,7 @@ export class BEIBridgeServer {
             detail: data?.detail || '',
             timestamp: data?.timestamp || Date.now()
           });
+          saveJobSessionRecord(jobId, payloadRecord);
         }
       }
       if (jobId && this.pendingJobs.has(jobId)) {
@@ -975,6 +1026,7 @@ export class BEIBridgeServer {
             detail: payloadRecord.error,
             timestamp: Date.now()
           });
+          saveJobSessionRecord(jobId, payloadRecord);
         }
       }
       if (jobId && this.pendingJobs.has(jobId)) {
@@ -1006,6 +1058,7 @@ export class BEIBridgeServer {
             detail: data.reason || 'Generation cancelled manually by user in browser tab',
             timestamp: Date.now()
           });
+          saveJobSessionRecord(jobId, payloadRecord);
         }
       }
       if (jobId && this.pendingJobs.has(jobId)) {
@@ -1082,7 +1135,7 @@ export class BEIBridgeServer {
   public async handleGenerateRequest(req: http.IncomingMessage, res: http.ServerResponse) {
     try {
       const payload = await this.parseRequestBody(req);
-      const { target = 'gemini', prompt, fullPrompt, aspectRatio = '16:9', accountSlot = 0, timeoutSeconds = 120, images = [], tabMode = 'same_window_group', bringTabToFront, chatSessionMode = 'new_chat', tabSessionId, preferredBrowser, browser, preferredEmail, email } = payload;
+      const { target = 'gemini', prompt, fullPrompt, aspectRatio = '16:9', accountSlot, timeoutSeconds = 120, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'same_chat', tabSessionId, preferredBrowser, browser, preferredEmail, email } = payload;
 
       if (!prompt) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1103,10 +1156,7 @@ export class BEIBridgeServer {
           return;
         }
 
-        const effectiveTimeout = Math.max(
-          timeoutSeconds || 900,
-          900
-        );
+        const effectiveTimeout = timeoutSeconds ? Math.min(Math.max(timeoutSeconds, 30), 900) : 150;
 
         const jobId = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const hasExplicitSlot = payload.accountSlot !== undefined;

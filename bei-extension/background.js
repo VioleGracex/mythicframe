@@ -46,6 +46,23 @@ const pendingFullSizeCaptures = new Map(); // jobId -> { resolve, timer } for na
 let lastGeminiDownloadId = null;           // most recent Gemini image download observed while a capture was armed
 let lastGeminiDownloadAt = 0;
 const removeWhenComplete = new Set();      // download ids to delete from disk once they finish
+const exhaustedSlots = new Map();          // slotKey -> timestamp until which the slot is exhausted
+
+function markSlotExhausted(target, slot, durationMs = 1800000) { // 30 min cooldown
+  const key = getSlotKey(target, slot);
+  exhaustedSlots.set(key, Date.now() + durationMs);
+  console.warn(`[MythicFrame BEI] Marked slot ${key} as QUOTA EXHAUSTED for ${Math.round(durationMs / 60000)} min.`);
+}
+
+function isSlotExhausted(target, slot) {
+  const key = getSlotKey(target, slot);
+  if (!exhaustedSlots.has(key)) return false;
+  if (Date.now() > exhaustedSlots.get(key)) {
+    exhaustedSlots.delete(key);
+    return false;
+  }
+  return true;
+}
 
 function lockTab(tabId) {
   if (tabId) busyTabs.add(tabId);
@@ -67,17 +84,28 @@ function maskEmail(email) {
 }
 
 function emitAuditLog(event, details, extra = {}) {
+  const logItem = {
+    event,
+    details,
+    timestamp: Date.now(),
+    ...extra
+  };
   try {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: "AUDIT_LOG",
-        data: {
-          event,
-          details,
-          timestamp: Date.now(),
-          ...extra
-        }
+        data: logItem
       }));
+    }
+  } catch (e) {}
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(['bei_recent_logs'], (res) => {
+        const logs = Array.isArray(res.bei_recent_logs) ? res.bei_recent_logs : [];
+        logs.push(logItem);
+        if (logs.length > 200) logs.splice(0, logs.length - 200);
+        chrome.storage.local.set({ bei_recent_logs: logs });
+      });
     }
   } catch (e) {}
 }
@@ -974,8 +1002,7 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
 
       const isCleanComposerTab = (t) => {
         const u = (t.url || t.pendingUrl || '').toLowerCase();
-        return /^https?:\/\/gemini\.google\.com(?:\/u\/\d+)?\/app(?:\?.*)?$/i.test(u) ||
-               /^https?:\/\/gemini\.google\.com(?:\/u\/\d+)?\/?$/i.test(u);
+        return u.includes("gemini.google.com");
       };
 
       const allGeminiTabs = allTabs.filter(t => (t.url || t.pendingUrl || '').toLowerCase().includes("gemini.google.com"));
@@ -987,19 +1014,15 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       // If the MythicFrame BEI tab group exists, ONLY reuse tabs inside the BEI group.
       // Never touch external browser tabs that belong to other AIs or user browsing sessions!
       if (beiGroupTabIds.size > 0) {
-        if (chatSessionMode === 'same_chat') {
-          matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t));
-        } else {
-          matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t) && isCleanComposerTab(t));
+        matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t));
+        if (!matchedTab) {
+          const safeCandidates = availableGeminiTabs.filter(t => !t.pinned);
+          matchedTab = safeCandidates.find(t => isSlotMatch(t)) || safeCandidates.find(t => t.active) || safeCandidates[0];
         }
       } else {
-        // Cold start before group creation: only claim tab if it is unpinned, clean composer base, and not in another user group
+        // Cold start before group creation: claim existing tab for slot, or any available unpinned gemini tab
         const safeCandidates = availableGeminiTabs.filter(t => !t.pinned && (!t.groupId || t.groupId === (chrome.tabGroups ? chrome.tabGroups.TAB_GROUP_ID_NONE : -1)));
-        if (chatSessionMode === 'same_chat') {
-          matchedTab = safeCandidates.find(t => isSlotMatch(t));
-        } else {
-          matchedTab = safeCandidates.find(t => isSlotMatch(t) && isCleanComposerTab(t));
-        }
+        matchedTab = safeCandidates.find(t => isSlotMatch(t)) || safeCandidates.find(t => t.active) || safeCandidates[0];
       }
 
       if (matchedTab && matchedTab.id) {
@@ -1055,9 +1078,11 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
           console.log(`[MythicFrame BEI] Reusing active chat thread on tab ${matchedTab.id} (${currentUrl}) without reloading.`);
         }
 
-        try {
-          await chrome.tabs.update(matchedTab.id, { active: true });
-        } catch (e) {}
+        if (bringTabToFront) {
+          try {
+            await chrome.tabs.update(matchedTab.id, { active: true });
+          } catch (e) {}
+        }
 
         await ensureContentScriptInjected(matchedTab.id, "gemini");
         return matchedTab.id;
@@ -1129,15 +1154,19 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       if (beiGroupTabIds.size > 0) {
         if (chatSessionMode === 'same_chat') {
           matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id));
+          if (!matchedTab) {
+            matchedTab = availableChatGptTabs.find(t => t.active) || availableChatGptTabs[0];
+          }
         } else {
-          matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id) && isCleanChatGptTab(t));
+          matchedTab = availableChatGptTabs.find(t => beiGroupTabIds.has(t.id) && isCleanChatGptTab(t)) ||
+                       availableChatGptTabs.find(t => beiGroupTabIds.has(t.id));
         }
       } else {
         const safeCandidates = availableChatGptTabs.filter(t => !t.pinned && (!t.groupId || t.groupId === (chrome.tabGroups ? chrome.tabGroups.TAB_GROUP_ID_NONE : -1)));
         if (chatSessionMode === 'same_chat') {
           matchedTab = safeCandidates[0];
         } else {
-          matchedTab = safeCandidates.find(t => isCleanChatGptTab(t));
+          matchedTab = safeCandidates.find(t => isCleanChatGptTab(t)) || safeCandidates[0];
         }
       }
 
@@ -1148,6 +1177,13 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
           try {
             await chrome.tabs.reload(matchedTab.id);
             await waitForTabReady(matchedTab.id, 10000);
+          } catch (e) {}
+        }
+        if (chatSessionMode === 'new_chat' && !isCleanChatGptTab(matchedTab)) {
+          console.log(`[MythicFrame BEI] 'new_chat' requested: Navigating ChatGPT tab ${matchedTab.id} to clean https://chatgpt.com/...`);
+          try {
+            await chrome.tabs.update(matchedTab.id, { url: "https://chatgpt.com/" });
+            await waitForTabReady(matchedTab.id, 12000);
           } catch (e) {}
         }
         await ensureContentScriptInjected(matchedTab.id, "chatgpt");
@@ -1200,16 +1236,18 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
  * 3. If needed, opens a fresh background tab and dispatches
  * 4. 100% eliminates "Receiving end does not exist" failure
  */
-async function dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds = 900, accountSlot = 0, images = [], tabMode = 'new_window_group', bringTabToFront = false, aspectRatio = '1:1', quality = 'ultra_original', modelQuality = 'auto') {
+async function dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds = 900, accountSlot = 0, images = [], tabMode = 'new_window_group', bringTabToFront = false, aspectRatio = '1:1', quality = 'ultra_original', modelQuality = 'auto', chatSessionMode = 'same_chat') {
   // Step 1: Attempt direct message dispatch with script injection
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       await ensureContentScriptInjected(tabId, target);
       const resp = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('tabs.sendMessage timeout after 4s')), 4000);
         chrome.tabs.sendMessage(tabId, {
           action: "EXECUTE_PROMPT",
-          data: { jobId, target, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality }
+          data: { jobId, target, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality, chatSessionMode }
         }, (response) => {
+          clearTimeout(timer);
           if (chrome.runtime.lastError) {
             reject(new Error(chrome.runtime.lastError.message));
           } else {
@@ -1236,10 +1274,12 @@ async function dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds 
     await new Promise(r => setTimeout(r, 600));
 
     const resp = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('tabs.sendMessage reload attempt timeout after 4s')), 4000);
       chrome.tabs.sendMessage(tabId, {
         action: "EXECUTE_PROMPT",
-        data: { jobId, target, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality }
+        data: { jobId, target, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality, chatSessionMode }
       }, (response) => {
+        clearTimeout(timer);
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
         } else {
@@ -1260,17 +1300,17 @@ async function dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds 
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
-      func: (jId, pText, tSec, imgs, qVal, arVal, mqVal) => {
+      func: (jId, pText, tSec, imgs, qVal, arVal, mqVal, csMode) => {
         if (typeof window.__MYTHIC_BEI_EXECUTE_PROMPT__ === 'function') {
-          window.__MYTHIC_BEI_EXECUTE_PROMPT__(jId, pText, tSec, imgs, qVal, arVal, mqVal);
+          window.__MYTHIC_BEI_EXECUTE_PROMPT__(jId, pText, tSec, imgs, qVal, arVal, mqVal, 0, csMode);
           return { success: true, method: 'global_fn' };
         }
         window.dispatchEvent(new CustomEvent('__MYTHIC_BEI_EXECUTE_PROMPT__', {
-          detail: { jobId: jId, prompt: pText, timeoutSeconds: tSec, images: imgs, quality: qVal, aspectRatio: arVal, modelQuality: mqVal }
+          detail: { jobId: jId, prompt: pText, timeoutSeconds: tSec, images: imgs, quality: qVal, aspectRatio: arVal, modelQuality: mqVal, chatSessionMode: csMode }
         }));
         return { success: true, method: 'custom_event' };
       },
-      args: [jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality]
+      args: [jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality, chatSessionMode]
     });
 
     if (results && results[0] && results[0].result && results[0].result.success) {
@@ -1298,7 +1338,7 @@ function isSlotBusy(target, slot) {
 }
 
 async function startJob(jobData) {
-  const { jobId, target, prompt, fullPrompt, aspectRatio = (storedDefaultAspectRatio || '1:1'), modelQuality = (storedDefaultModelQuality || 'auto'), accountSlot = 0, timeoutSeconds, images = [], tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'new_chat', tabSessionId = null, quality = 'ultra_original' } = jobData;
+  const { jobId, target, prompt, fullPrompt, aspectRatio = (storedDefaultAspectRatio || '1:1'), modelQuality = (storedDefaultModelQuality || 'auto'), accountSlot = 0, timeoutSeconds, images = [], tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'same_chat', tabSessionId = null, quality = 'ultra_original' } = jobData;
   const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
 
   // Synchronous reservation: prevent subsequent requests from slipping through while findOrCreateTab runs!
@@ -1354,7 +1394,7 @@ async function startJob(jobData) {
     }));
   }
 
-  await dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds, parsedSlot, images, tabMode, bringTabToFront, aspectRatio, quality, modelQuality);
+  await dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds, parsedSlot, images, tabMode, bringTabToFront, aspectRatio, quality, modelQuality, chatSessionMode);
 }
 
 async function processNextInQueue(target, slot) {
@@ -1578,8 +1618,8 @@ async function handleBridgeCommand(msg) {
   }
 
   if (type === "EXECUTE_PROMPT") {
-    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot = 0, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'new_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single', preferredEmail, email } = data;
-    let parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
+    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'same_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single', preferredEmail, email } = data;
+    let parsedSlot = (typeof data.accountSlot === 'number') ? data.accountSlot : undefined;
 
     // Account Priority System:
     // Priority 1: User explicitly requested a specific email address
@@ -1592,21 +1632,45 @@ async function handleBridgeCommand(msg) {
           break;
         }
       }
-    } else if (data.accountSlot === undefined && target === 'gemini') {
-      // Priority 2: Automatically prioritize Pro / Gemini Advanced subscription accounts!
-      const proSlot = Array.from(knownGoogleAccounts.values()).find(acc => acc && (acc.tier === 'advanced' || acc.tier === 'pro') && !isSlotBusy(target, acc.slot));
+    } else if (parsedSlot === undefined && target === 'gemini') {
+      // Priority 2: Automatically prioritize Pro / Gemini Advanced subscription accounts that are NOT exhausted and NOT busy!
+      const proSlot = Array.from(knownGoogleAccounts.values()).find(acc => acc && (acc.tier === 'advanced' || acc.tier === 'pro') && !isSlotExhausted(target, acc.slot) && !isSlotBusy(target, acc.slot));
       if (proSlot) {
         parsedSlot = proSlot.slot;
         console.log(`[MythicFrame BEI Worker] Account Priority 2: Auto-prioritized Gemini Advanced subscription on slot ${proSlot.slot} (${proSlot.email})`);
+      } else {
+        // Find any non-exhausted Pro slot even if currently busy (it will queue)
+        const busyProSlot = Array.from(knownGoogleAccounts.values()).find(acc => acc && (acc.tier === 'advanced' || acc.tier === 'pro') && !isSlotExhausted(target, acc.slot));
+        if (busyProSlot) {
+          parsedSlot = busyProSlot.slot;
+          console.log(`[MythicFrame BEI Worker] Account Priority 2b: Routing to Gemini Advanced slot ${busyProSlot.slot} (${busyProSlot.email})`);
+        } else {
+          // Fallback to any non-exhausted account slot
+          const nonExhausted = Array.from(knownGoogleAccounts.values()).find(acc => !isSlotExhausted(target, acc.slot) && !isSlotBusy(target, acc.slot));
+          if (nonExhausted) {
+            parsedSlot = nonExhausted.slot;
+          } else {
+            parsedSlot = 0;
+          }
+        }
+      }
+    } else if (parsedSlot !== undefined && isSlotExhausted(target, parsedSlot)) {
+      // Slot was manually provided, but is marked exhausted! Failover to a healthy subscribed account
+      const healthyProSlot = Array.from(knownGoogleAccounts.values()).find(acc => acc && (acc.tier === 'advanced' || acc.tier === 'pro') && !isSlotExhausted(target, acc.slot));
+      if (healthyProSlot) {
+        console.warn(`[MythicFrame BEI Worker] Requested slot ${parsedSlot} is quota exhausted. Auto-failing over to active subscribed slot ${healthyProSlot.slot} (${healthyProSlot.email})`);
+        parsedSlot = healthyProSlot.slot;
       }
     }
+
+    if (parsedSlot === undefined) parsedSlot = 0;
 
     // Multi-Account Mode: Route to an idle account slot when multi mode is active and current slot is busy
     if (dispatchMode === 'multi' && isSlotBusy(target, parsedSlot)) {
       console.log(`[MythicFrame BEI Worker] Multi-Account Mode: Slot ${target}:${parsedSlot} is busy. Finding idle account slot...`);
       const knownSlots = Array.from(knownGoogleAccounts.keys());
       const candidateSlots = knownSlots.length > 0 ? knownSlots : [0, 1, 2, 3];
-      const idleSlot = candidateSlots.find(s => !isSlotBusy(target, s));
+      const idleSlot = candidateSlots.find(s => !isSlotBusy(target, s) && !isSlotExhausted(target, s));
       if (idleSlot !== undefined) {
         console.log(`[MythicFrame BEI Worker] Multi-Account Mode: Auto-routed job ${jobId} to idle slot ${idleSlot} for parallel execution!`);
         emitAuditLog('BATCH_SLOT_ASSIGNED', `Auto-routed batch job ${jobId} to idle slot ${idleSlot}`, {
@@ -2087,12 +2151,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "GENERATION_FAILED") {
-    const { jobId, error } = message.data;
+    const { jobId, error, isRateLimited } = message.data;
     const job = activeJobs.get(jobId);
     if (job && job.tabId) releaseTab(job.tabId);
     const jobTarget = job?.target;
     const jobSlot = job?.accountSlot ?? 0;
     activeJobs.delete(jobId);
+
+    // If quota or rate limit exceeded, mark slot as exhausted
+    if (isRateLimited || /quota|limit reached|limit resets|rate limit/i.test(error || '')) {
+      if (jobTarget) markSlotExhausted(jobTarget, jobSlot);
+    }
 
     // Concurrency Guard: Process next queued job for this slot
     if (jobTarget) {

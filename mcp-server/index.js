@@ -1476,7 +1476,7 @@ async function saveLibraryAssetToFile(assetUrl, prefix = "library") {
     if (assetUrl.startsWith("data:image/")) {
       const isPng = assetUrl.startsWith("data:image/png");
       const isWebp = assetUrl.startsWith("data:image/webp");
-      extension = isPng ? "png" : (isWebp ? "webp" : "jpg");
+      extension = isPng ? "png" : isWebp ? "webp" : "jpg";
       const base64Data = assetUrl.replace(/^data:image\/\w+;base64,/, "");
       buffer = Buffer.from(base64Data, "base64");
     } else {
@@ -1495,7 +1495,7 @@ async function saveLibraryAssetToFile(assetUrl, prefix = "library") {
     const filePath = path.join(outDir, fileName);
     fs.writeFileSync(filePath, buffer);
     const sizeMB = `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`;
-    const mimeSubtype = extension === "png" ? "png" : (extension === "webp" ? "webp" : "jpeg");
+    const mimeSubtype = extension === "png" ? "png" : extension === "webp" ? "webp" : "jpeg";
     const base64 = `data:image/${mimeSubtype};base64,${buffer.toString("base64")}`;
     return { filePath, sizeMB, base64 };
   } catch (err) {
@@ -1535,7 +1535,7 @@ async function generateWithBEI(options) {
     accountSlot = 0,
     preferredEmail,
     images = [],
-    timeoutSeconds = 900,
+    timeoutSeconds = 150,
     tabMode = "same_window_group",
     bringTabToFront = false,
     quality = "ultra_original",
@@ -1597,8 +1597,8 @@ async function generateWithBEI(options) {
   const base64Data = result.image.replace(/^data:image\/\w+;base64,/, "");
   let buffer = Buffer.from(base64Data, "base64");
   const isPng = result.image.startsWith("data:image/png");
-  const isWebp = result.image.startsWith("data:image/webp") || (buffer.length > 12 && buffer.toString("utf8", 0, 4) === "RIFF" && buffer.toString("utf8", 8, 12) === "WEBP");
-  const extension = isPng ? "png" : (isWebp ? "webp" : "jpg");
+  const isWebp = result.image.startsWith("data:image/webp") || buffer.length > 12 && buffer.toString("utf8", 0, 4) === "RIFF" && buffer.toString("utf8", 8, 12) === "WEBP";
+  const extension = isPng ? "png" : isWebp ? "webp" : "jpg";
   const fileName = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
   const filePath = path.join(outDir, fileName);
   if (buffer.length < 500 * 1024 && quality !== "standard") {
@@ -2465,17 +2465,19 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
 [MANDATORY ISOLATION]: Render standalone character cleanly centered on an absolute flat white background (#FFFFFF) with high contrast for alpha cutout. No shadows, no gradients, no scenery.
 `;
       }
+      const effectiveEmail = args.preferredEmail || projectConfig?.preferredEmail;
+      const effectiveSlot = args.accountSlot !== undefined ? args.accountSlot : projectConfig?.preferredSlot;
       const beiRes = await generateWithBEI({
         prompt: promptToSend,
         aspectRatio: args.aspectRatio || "1:1",
         target: args.target || "gemini",
-        accountSlot: args.accountSlot ?? 0,
-        preferredEmail: args.preferredEmail,
+        accountSlot: effectiveSlot,
+        preferredEmail: effectiveEmail,
         images: args.images || [],
         quality: args.quality || "ultra_original",
         dispatchMode: args.dispatchMode || "single",
         chatSessionMode: args.chatSessionMode || "same_chat",
-        timeoutSeconds: args.timeoutSeconds || 900
+        timeoutSeconds: args.timeoutSeconds || 150
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, "/");
       const fileName = path2.basename(beiRes.filePath);
@@ -2525,13 +2527,15 @@ STYLE: ${effectiveStyle.replace(/^,\s*/, "")}
       if (engineChoice === "prompt-only") {
         return { content: [{ type: "text", text: formatTextInstruction(promptToSend) }] };
       }
+      const effectiveEmail = args.preferredEmail || projectConfig?.preferredEmail;
+      const effectiveSlot = args.accountSlot !== undefined ? args.accountSlot : projectConfig?.preferredSlot;
       if (engineChoice === "bei") {
         const beiRes = await generateWithBEI({
           prompt: promptToSend,
           aspectRatio: args.aspectRatio || "1:1",
           target: args.target || "gemini",
-          accountSlot: args.accountSlot ?? 0,
-          preferredEmail: args.preferredEmail,
+          accountSlot: effectiveSlot,
+          preferredEmail: effectiveEmail,
           quality: args.quality || "ultra_original",
           dispatchMode: args.dispatchMode || "single",
           chatSessionMode: args.chatSessionMode || "same_chat",
@@ -2575,8 +2579,8 @@ Please embed this image for the user, AND provide a clickable markdown link [${f
           prompt: promptToSend,
           aspectRatio: args.aspectRatio || "1:1",
           target: args.target || "gemini",
-          accountSlot: args.accountSlot ?? 0,
-          preferredEmail: args.preferredEmail,
+          accountSlot: effectiveSlot,
+          preferredEmail: effectiveEmail,
           quality: args.quality || "ultra_original",
           dispatchMode: args.dispatchMode || "single",
           chatSessionMode: args.chatSessionMode || "same_chat",

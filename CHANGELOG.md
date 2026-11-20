@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.8] — 2026-11-20 *(BEI Extension v1.5.9)*
+
+### Fixed
+- **Subscribed / Paid Tier Account Prioritization**:
+  - Removed default fallback of `accountSlot: 0` in `src/mcp/index.ts` and `src/server/beiBridge.ts` when no slot is explicitly requested. This allows `background.js` to automatically prioritize accounts with active Pro / Gemini Advanced subscriptions.
+  - Enabled support for `preferredEmail` and `preferredSlot` in `mythic_project.json` to lock generations to user-selected subscription accounts.
+  - Added auto-failover when an account slot reaches daily or quota rate limits: automatically blacklists exhausted slots for 30 minutes and redirects jobs to healthy subscribed accounts.
+  - Added new quota exhaustion pattern matches (`as soon as your limit resets`, `until your limit resets`, `limit resets`) to `GEMINI_RATE_LIMIT_PATTERNS`.
+- **Tab Proliferation & Rapid Switching Elimination**:
+  - Relaxed tab matching logic in `background.js`: any active tab on `gemini.google.com` matching the account slot is now reused directly instead of spawning redundant tabs.
+  - Disabled focus stealing (`bringTabToFront: false` by default) so background tab operations run completely silently without interrupting user activity.
+- **Aspect Ratio & Image Upload Sequencing**:
+  - Fixed race condition in `gemini_content.js`: reference image attachments are now uploaded and allowed to settle in Angular's DOM *before* native "Create image" mode and aspect ratio are selected.
+  - Fixed aspect ratio reset caused by Angular rebuilding the composer container after file upload.
+
+---
+
+## [1.6.7] — 2026-11-17 *(BEI Extension v1.5.8)*
+
+### Fixed
+- **Dropdown Menu Blocking & "auto" Quality Loop**:
+  - `selectNativeModelQuality` in `gemini_content.js` now immediately returns when `targetQuality === 'auto'` or `'default'`, avoiding searching for non-existent "auto" menu items that left dropdown overlays open.
+  - Added Escape key dispatch and overlay backdrop dismissal to guarantee menus never stay open or obstruct the composer input.
+- **Multilingual & Russian UI Support**:
+  - Added Russian selectors and patterns (`Отправить`, `Остановить`, `Стоп`) to `SEND_BUTTON_SELECTORS`, `STOP_BUTTON_SELECTORS`, `isStopButtonElement`, and send candidate scanners.
+  - Added Russian refusal, cancellation, and quota/rate limit regex patterns (`не удалось создать`, `генерация остановлена`, `достигнут дневной лимит`).
+- **`same_chat` Multi-Tab Isolation & Thread Preservation**:
+  - Fixed `chatSessionMode === 'same_chat'` tab matching in `background.js`: if a tab is not in the BEI tab group, it now gracefully falls back to available Gemini/ChatGPT tabs rather than triggering `chrome.tabs.create()` on every single turn.
+  - Content script `executePrompt` now strictly preserves existing conversation threads when `chatSessionMode === 'same_chat'`, only resetting via "New Chat" when explicitly requested (`new_chat`).
+  - Parameterized `chatSessionMode` end-to-end across `beiBridge.ts`, `background.js`, and `gemini_content.js`.
+- **Persistent Session & Audit Logging**:
+  - BEI Bridge now creates and persists structured session JSON files under `logs/sessions/${jobId}.json` for every generation job (tracking status, timestamps, prompt, accounts, errors, steps).
+  - Appended human-readable audit lines to both system Documents and project-local `logs/bei_session_audit.log`.
+  - Added extension-side local storage logging (`chrome.storage.local['bei_recent_logs']`) capturing up to 200 recent events.
+
+---
+
+## [1.6.6] — 2026-11-17 *(BEI Extension v1.5.7)*
+
+### Fixed
+- **Duplicate Image Upload Prevention**:
+  - Gated file attachment in `gemini_content.js`: file input assignment now waits for chip verification before considering fallbacks, completely preventing duplicate attachment issues where file input, HTML5 drag-and-drop, and clipboard paste were previously executed together unconditionally.
+  - Eliminated redundant progress event broadcasts for reference image uploads.
+  - Added dedicated `'PING'` message handler in both Gemini and ChatGPT content scripts to prevent false unresponsiveness detections and redundant script re-injections.
+- **Tab Reuse & "New Chat" Navigation**:
+  - Fixed tab discovery in `background.js` where `isCleanComposerTab` requirement previously disqualified existing conversation tabs from reuse, causing unnecessary browser tab spawning.
+  - When `chatSessionMode === 'new_chat'` is requested, existing tabs for the target account slot are now properly reused and navigated to the clean `/app` entrypoint rather than opening a brand-new tab.
+- **Stall Watchdog & Automatic Stop-and-Retry**:
+  - Replaced the hardcoded 900s (15-minute) timeout floor with a responsive 150s default ceiling in `beiBridge.ts` and `beiService.ts`.
+  - Added an active stall watchdog in `gemini_content.js` that detects when Gemini is stuck with no output for >60s.
+  - Automatically clicks the native Stop button, clears the composer, and performs an automated retry (attempt 2/2) in a fresh composer instead of hanging indefinitely.
+  - Bound all polling intervals to a tracked global reference (`window.__MYTHIC_BEI_ACTIVE_INTERVAL__`) to prevent orphaned zombie timer loops from continuing in the background after cancellation or retry.
+
+---
+
 ## [1.6.2] — 2026-10-16 *(BEI Extension v1.5.3)*
 
 ### Fixed

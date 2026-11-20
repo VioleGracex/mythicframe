@@ -465,7 +465,7 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     accountSlot = 0,
     preferredEmail,
     images = [],
-    timeoutSeconds = 900,
+    timeoutSeconds = 150,
     tabMode = 'same_window_group',
     bringTabToFront = false,
     quality = 'ultra_original',

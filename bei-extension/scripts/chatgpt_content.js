@@ -711,6 +711,11 @@
   }
 
   const messageListener = (request, sender, sendResponse) => {
+    if (request.action === 'PING') {
+      sendResponse({ pong: true, success: true });
+      return true;
+    }
+
     if (request.action === 'GET_TAB_INFO') {
       const email = extractChatGPTAccountEmail();
       sendResponse({

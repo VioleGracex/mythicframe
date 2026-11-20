@@ -557,7 +557,7 @@ export const generateWithBEI = async (
       fullPrompt: assembled.fullPrompt,
       aspectRatio: params.aspectRatio || '16:9',
       accountSlot: currentSlot,
-      timeoutSeconds: Math.max(config.timeoutSeconds || 900, 900),
+      timeoutSeconds: config.timeoutSeconds || 150,
       tabMode: config.tabMode || 'new_window_group',
       bringTabToFront: Boolean(config.bringTabToFront),
       chatSessionMode,

@@ -803,17 +803,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (wantTransparent && !promptToSend.includes("[MANDATORY ISOLATION]")) {
         promptToSend += `\n[MANDATORY ISOLATION]: Render standalone character cleanly centered on an absolute flat white background (#FFFFFF) with high contrast for alpha cutout. No shadows, no gradients, no scenery.\n`;
       }
+      const effectiveEmail = args.preferredEmail || (projectConfig as any).preferredEmail;
+      const effectiveSlot = args.accountSlot !== undefined ? args.accountSlot : (projectConfig as any).preferredSlot;
+
       const beiRes = await generateWithBEI({
         prompt: promptToSend,
         aspectRatio: args.aspectRatio || '1:1',
         target: args.target || 'gemini',
-        accountSlot: args.accountSlot ?? 0,
-        preferredEmail: args.preferredEmail,
+        accountSlot: effectiveSlot,
+        preferredEmail: effectiveEmail,
         images: args.images || [],
         quality: args.quality || 'ultra_original',
         dispatchMode: args.dispatchMode || 'single',
         chatSessionMode: args.chatSessionMode || 'same_chat',
-        timeoutSeconds: args.timeoutSeconds || 900
+        timeoutSeconds: args.timeoutSeconds || 150
       });
       const formattedPath = beiRes.filePath.replace(/\\/g, '/');
       const fileName = path.basename(beiRes.filePath);
@@ -858,13 +861,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: formatTextInstruction(promptToSend) }] };
       }
 
+      const effectiveEmail = args.preferredEmail || (projectConfig as any).preferredEmail;
+      const effectiveSlot = args.accountSlot !== undefined ? args.accountSlot : (projectConfig as any).preferredSlot;
+
       if (engineChoice === 'bei') {
         const beiRes = await generateWithBEI({
           prompt: promptToSend,
           aspectRatio: args.aspectRatio || '1:1',
           target: args.target || 'gemini',
-          accountSlot: args.accountSlot ?? 0,
-          preferredEmail: args.preferredEmail,
+          accountSlot: effectiveSlot,
+          preferredEmail: effectiveEmail,
           quality: args.quality || 'ultra_original',
           dispatchMode: args.dispatchMode || 'single',
           chatSessionMode: args.chatSessionMode || 'same_chat',
@@ -900,8 +906,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           prompt: promptToSend,
           aspectRatio: args.aspectRatio || '1:1',
           target: args.target || 'gemini',
-          accountSlot: args.accountSlot ?? 0,
-          preferredEmail: args.preferredEmail,
+          accountSlot: effectiveSlot,
+          preferredEmail: effectiveEmail,
           quality: args.quality || 'ultra_original',
           dispatchMode: args.dispatchMode || 'single',
           chatSessionMode: args.chatSessionMode || 'same_chat',
