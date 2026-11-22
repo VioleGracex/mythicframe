@@ -345,6 +345,9 @@
 
   async function executePrompt(jobId, prompt, timeoutSeconds = 900, images = []) {
     let keepAlivePort = null;
+    // Ask the MAIN-world shim (page_visibility.js) to keep this page exempt from background
+    // timer throttling for the duration of the job (auto-expires after the TTL).
+    try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'KEEP_AWAKE', on: true, ttlMs: ((Number(timeoutSeconds) || 300) * 1000) + 180000 }, '*'); } catch (e) {}
     try {
       if (chrome.runtime && chrome.runtime.connect) {
         keepAlivePort = chrome.runtime.connect({ name: 'mythicframe-bei-keepalive' });

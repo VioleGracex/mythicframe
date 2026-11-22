@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.9] — 2026-11-22 *(BEI Extension v1.6.0)*
+
+### Fixed
+- **Duplicate / late prompts**: when the server timed out or cancelled a job it never told the extension, so the job stayed queued and ran minutes later on another tab. The server now sends `CANCEL_GENERATION` on timeout, includes its pending job ids in every `pong`, and the extension drops any queued or running job the server no longer waits for.
+- **Blind retries**: the web client re-sent the same prompt up to 3 times on any HTTP error. It now retries only on network failures, and "rescue" fetches target its own job id instead of returning the previous job's image.
+- **Cancel killed every tab**: cancelling one job broadcast "stop" to all Gemini/ChatGPT tabs, and aborting in the UI cancelled all jobs. Cancels now target one job (client-supplied job id) on its own tab.
+- **Wrong account tab**: when no tab matched the account slot, the extension reused the active or first Gemini tab of another account. Matching is now strict per slot.
+- **Minimized Chrome stalls**: visibility spoofing moved into the page's MAIN world (`page_visibility.js`), `requestAnimationFrame` falls back to timers while hidden, worker tabs are marked non-discardable, and a local WebRTC channel is held during jobs to skip Chrome's intensive timer throttling.
+- **ChatGPT opening unexpectedly**: clicking a ChatGPT account row in Settings no longer switches the engine target; audit logs now record the job `target` and `source`.
+- **Timeout accounting**: the server timer starts when a job actually starts on a tab (not while it waits in the queue), with a 3-minute inactivity window and a hard cap instead of a 10-minute reset on every progress ping.
+
+### Changed
+- **Per-tab queues**: every BEI tab is an independent worker with its own queue and chat. A job goes to exactly one tab of the chosen account (least loaded, then same project). Tabs on the same account run in parallel; closing a tab re-routes its waiting jobs.
+- **Automatic new chat**: jobs carry a `projectId`. A tab switching to a different project always starts a new chat. Within the same project it starts a new chat after a safety refusal, a stuck/timed-out generation, 2 bad results in a row, the same prompt sent a 3rd time, 12 turns, 45 min idle, an aspect-ratio change, or when the tab was moved to another conversation. The decision and reason appear in the audit log and result metadata.
+
+---
+
 ## [1.6.8] — 2026-11-20 *(BEI Extension v1.5.9)*
 
 ### Fixed

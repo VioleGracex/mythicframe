@@ -37,7 +37,6 @@ let reconnectTimer = null;
 let heartbeatTimer = null;
 const activeJobs = new Map(); // jobId -> { tabId, target, prompt, accountSlot }
 const busyTabs = new Set(); // tabId -> boolean (strictly locked while job is running)
-const slotQueues = new Map(); // slotKey -> Array<jobData>
 const tabEmailsCache = new Map(); // tabId -> email string
 const knownGoogleAccounts = new Map(); // slot -> { slot, email, name, tier }
 const tabChatHistory = new Map(); // tabId -> { chatName, chatUrl, conversationId, target, accountSlot, updatedAt }
@@ -499,7 +498,10 @@ async function connectBridge() {
     ws.onmessage = async (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === "pong") return;
+        if (msg.type === "pong") {
+          if (Array.isArray(msg.pendingJobIds)) reconcileWithServer(msg.pendingJobIds);
+          return;
+        }
         await handleBridgeCommand(msg);
       } catch (err) {
         console.warn("[MythicFrame BEI Worker] Error handling bridge message:", err);
@@ -1016,13 +1018,14 @@ async function findOrCreateTab(target, accountSlot = 0, tabMode = 'new_window_gr
       if (beiGroupTabIds.size > 0) {
         matchedTab = availableGeminiTabs.find(t => beiGroupTabIds.has(t.id) && isSlotMatch(t));
         if (!matchedTab) {
+          // Strict account match: never reuse another account's tab (that sent jobs to the wrong slot).
           const safeCandidates = availableGeminiTabs.filter(t => !t.pinned);
-          matchedTab = safeCandidates.find(t => isSlotMatch(t)) || safeCandidates.find(t => t.active) || safeCandidates[0];
+          matchedTab = safeCandidates.find(t => isSlotMatch(t)) || null;
         }
       } else {
         // Cold start before group creation: claim existing tab for slot, or any available unpinned gemini tab
         const safeCandidates = availableGeminiTabs.filter(t => !t.pinned && (!t.groupId || t.groupId === (chrome.tabGroups ? chrome.tabGroups.TAB_GROUP_ID_NONE : -1)));
-        matchedTab = safeCandidates.find(t => isSlotMatch(t)) || safeCandidates.find(t => t.active) || safeCandidates[0];
+        matchedTab = safeCandidates.find(t => isSlotMatch(t)) || null;
       }
 
       if (matchedTab && matchedTab.id) {
@@ -1327,95 +1330,439 @@ function getSlotKey(target, slot) {
   return `${target}:${parsed}`;
 }
 
-function isSlotBusy(target, slot) {
-  const slotKey = getSlotKey(target, slot);
+// ─── PER-TAB WORKERS ─────────────────────────────────────────────────────────
+// Every BEI tab is an independent worker with its own FIFO queue and its own chat.
+// Tabs on the same account run in parallel; a job is never sent to two tabs.
+const tabQueues = new Map();      // tabId -> Array<jobData> (waiting, not started)
+const tabStarting = new Set();    // tabIds currently preparing a job (between dequeue and dispatch)
+const tabChatState = new Map();   // tabId -> { projectId, turns, badStreak, regenCount, lastPromptHash, lastOutcome, lastAspectRatio, chatId, lastUsedAt }
+const slotTabCounts = new Map();  // slotKey -> worker tab count last seen
+const cancelledJobIds = new Set(); // recently cancelled jobs (guards the dequeue -> dispatch window)
+
+// Auto new-chat thresholds (same project). A different project ALWAYS gets a new chat.
+const CHAT_MAX_TURNS = 12;                 // long threads drift and slow Gemini down
+const CHAT_IDLE_RESET_MS = 45 * 60 * 1000; // stale thread after 45 min idle
+const CHAT_BAD_STREAK_LIMIT = 2;           // 2 bad results in a row -> fresh chat
+const CHAT_REGEN_LIMIT = 2;                // same prompt sent a 3rd time -> fresh chat
+const TAB_QUEUE_LIMIT = 16;
+const NEXT_JOB_SETTLE_MS = 1200;           // let the page settle before the next queued job
+
+function sendToBridge(payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify(payload)); } catch (e) {}
+  }
+}
+
+function rememberCancelled(jobId) {
+  if (!jobId) return;
+  cancelledJobIds.add(jobId);
+  if (cancelledJobIds.size > 200) {
+    const first = cancelledJobIds.values().next().value;
+    cancelledJobIds.delete(first);
+  }
+}
+
+function persistTabChatState() {
+  if (chrome.storage && chrome.storage.session) {
+    try { chrome.storage.session.set({ beiTabChatState: Array.from(tabChatState.entries()) }); } catch (e) {}
+  }
+}
+
+function restoreTabChatState() {
+  if (chrome.storage && chrome.storage.session) {
+    try {
+      chrome.storage.session.get(['beiTabChatState'], (res) => {
+        if (res && Array.isArray(res.beiTabChatState)) {
+          for (const [tabId, state] of res.beiTabChatState) {
+            if (!tabChatState.has(tabId)) tabChatState.set(tabId, state);
+          }
+        }
+      });
+    } catch (e) {}
+  }
+}
+restoreTabChatState();
+
+function hashPrompt(str) {
+  const s = String(str || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+function extractConversationId(url) {
+  const u = String(url || '');
+  const m = u.match(/\/app\/([a-zA-Z0-9_-]{8,})/) || u.match(/\/c\/([a-zA-Z0-9-]{8,})/);
+  return m ? m[1] : null;
+}
+
+function isTabWorking(tabId) {
+  return busyTabs.has(tabId) || tabStarting.has(tabId);
+}
+
+function getTabLoad(tabId) {
+  return (isTabWorking(tabId) ? 1 : 0) + ((tabQueues.get(tabId) || []).length);
+}
+
+function countSlotLoad(target, slot) {
+  const key = getSlotKey(target, slot);
+  let n = 0;
   for (const job of activeJobs.values()) {
-    if (getSlotKey(job.target, job.accountSlot) === slotKey) {
-      return true;
-    }
+    if (getSlotKey(job.target, job.accountSlot) === key) n++;
+  }
+  for (const q of tabQueues.values()) {
+    for (const j of q) if (getSlotKey(j.target, j.accountSlot) === key) n++;
+  }
+  return n;
+}
+
+// A slot (account) is busy only when every one of its tabs already has work.
+function isSlotBusy(target, slot) {
+  const tabs = Math.max(1, slotTabCounts.get(getSlotKey(target, slot)) || 1);
+  return countSlotLoad(target, slot) >= tabs;
+}
+
+function tabMatchesSlot(tab, target, slot) {
+  const u = (tab.url || tab.pendingUrl || '').toLowerCase();
+  if (target === 'gemini') {
+    if (!u.includes('gemini.google.com')) return false;
+    const m = u.match(/\/u\/(\d+)/);
+    return (m ? parseInt(m[1], 10) : 0) === slot;
+  }
+  if (target === 'chatgpt') {
+    return u.includes('chatgpt.com') || u.includes('chat.openai.com');
   }
   return false;
 }
 
-async function startJob(jobData) {
-  const { jobId, target, prompt, fullPrompt, aspectRatio = (storedDefaultAspectRatio || '1:1'), modelQuality = (storedDefaultModelQuality || 'auto'), accountSlot = 0, timeoutSeconds, images = [], tabMode = 'new_window_group', bringTabToFront = false, chatSessionMode = 'same_chat', tabSessionId = null, quality = 'ultra_original' } = jobData;
-  const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
+// Worker tabs for an account: strictly same target + same account slot. Never another account's tab.
+async function getWorkerTabs(target, slot) {
+  const parsed = (typeof slot === 'number') ? slot : (parseInt(slot, 10) || 0);
+  const allTabs = await chrome.tabs.query({});
+  let beiGroupIds = new Set();
+  if (chrome.tabGroups) {
+    try {
+      const groups = await chrome.tabGroups.query({ title: 'MythicFrame BEI' });
+      beiGroupIds = new Set((groups || []).map(g => g.id));
+    } catch (e) {}
+  }
+  const noGroup = chrome.tabGroups ? chrome.tabGroups.TAB_GROUP_ID_NONE : -1;
+  const matches = allTabs.filter(t => t.id && !t.pinned && tabMatchesSlot(t, target, parsed));
+  const inBeiGroup = matches.filter(t => beiGroupIds.has(t.groupId));
+  // Prefer tabs inside the BEI group; otherwise only ungrouped tabs (never the user's own tab groups).
+  const workers = inBeiGroup.length > 0 ? inBeiGroup : matches.filter(t => !t.groupId || t.groupId === noGroup);
+  slotTabCounts.set(getSlotKey(target, parsed), workers.length);
+  return workers;
+}
 
-  // Synchronous reservation: prevent subsequent requests from slipping through while findOrCreateTab runs!
-  activeJobs.set(jobId, { target, prompt, fullPrompt, images, timeoutSeconds, tabMode, bringTabToFront, quality, accountSlot: parsedSlot, status: 'routing', submitted: false, dispatchMode: jobData.dispatchMode || 'single' });
+// Least-loaded tab wins; on a tie prefer the tab whose chat already belongs to this project.
+function pickTabForJob(tabs, job) {
+  const project = job.projectId || 'default';
+  const sameProject = (id) => ((tabChatState.get(id) || {}).projectId === project ? 1 : 0);
+  const sorted = [...tabs].sort((a, b) =>
+    (getTabLoad(a.id) - getTabLoad(b.id)) ||
+    (sameProject(b.id) - sameProject(a.id)) ||
+    (a.id - b.id)
+  );
+  return sorted[0].id;
+}
+
+/**
+ * Decides whether the job continues the tab's current chat or starts a fresh one.
+ * Returns [mode, reason]. Different project => always a new chat.
+ */
+function decideChatMode(tab, job) {
+  const project = job.projectId || 'default';
+  const s = tabChatState.get(tab.id);
+  if (job.chatSessionMode === 'new_chat') return ['new_chat', 'caller requested a new chat'];
+  if (!s) return ['new_chat', 'no tracked chat on this tab yet'];
+  if (s.projectId !== project) return ['new_chat', `different project (${s.projectId} -> ${project})`];
+
+  const currentConv = extractConversationId(tab.url || tab.pendingUrl);
+  if (s.chatId && currentConv && currentConv !== s.chatId) return ['new_chat', 'tab was moved to another conversation'];
+  if (s.lastOutcome === 'refused') return ['new_chat', 'last result was a safety/policy refusal'];
+  if (s.lastOutcome === 'stuck') return ['new_chat', 'last generation got stuck or timed out'];
+  if (s.badStreak >= CHAT_BAD_STREAK_LIMIT) return ['new_chat', `${s.badStreak} bad results in a row`];
+  if (s.lastPromptHash === hashPrompt(job.prompt) && (s.regenCount + 1) >= CHAT_REGEN_LIMIT) {
+    return ['new_chat', 'same prompt re-sent repeatedly (results not accepted)'];
+  }
+  if (s.turns >= CHAT_MAX_TURNS) return ['new_chat', `chat reached ${s.turns} turns (context drift)`];
+  if (s.lastUsedAt && (Date.now() - s.lastUsedAt) > CHAT_IDLE_RESET_MS) return ['new_chat', 'chat idle for 45+ min'];
+  if (s.lastAspectRatio && job.aspectRatio && s.lastAspectRatio !== job.aspectRatio) {
+    return ['new_chat', `aspect ratio changed (${s.lastAspectRatio} -> ${job.aspectRatio}); Gemini tends to repeat the previous ratio in a thread`];
+  }
+  return ['same_chat', 'same project, chat healthy'];
+}
+
+function noteChatTurn(tabId, job, chatMode) {
+  const now = Date.now();
+  const h = hashPrompt(job.prompt);
+  let s = tabChatState.get(tabId);
+  if (chatMode === 'new_chat' || !s) {
+    s = { projectId: job.projectId || 'default', turns: 0, badStreak: 0, regenCount: 0, lastPromptHash: null, lastOutcome: null, lastAspectRatio: null, chatId: null, createdAt: now };
+  }
+  s.regenCount = (s.lastPromptHash === h) ? (s.regenCount || 0) + 1 : 0;
+  s.lastPromptHash = h;
+  s.turns = (s.turns || 0) + 1;
+  s.lastUsedAt = now;
+  s.lastAspectRatio = job.aspectRatio || s.lastAspectRatio;
+  s.lastOutcome = 'running';
+  tabChatState.set(tabId, s);
+  persistTabChatState();
+}
+
+function classifyFailure(text) {
+  const t = String(text || '');
+  if (/polic|safety|guideline|can['’]?t (help|create|generate|make)|unable to (create|generate|make)|not able to (create|generate)|refus|violat|blocked|not allowed/i.test(t)) return 'refused';
+  if (/stuck|no output|timed? ?out|timeout/i.test(t)) return 'stuck';
+  return 'failed';
+}
+
+// outcome: 'success' | 'failed' | 'rate_limited' | 'user_cancelled' | 'text'
+function recordTabOutcome(tabId, outcome, errorText = '') {
+  const s = tabChatState.get(tabId);
+  if (!s) return;
+  s.lastUsedAt = Date.now();
+  if (outcome === 'success') {
+    s.badStreak = 0;
+    s.lastOutcome = 'success';
+  } else if (outcome === 'rate_limited') {
+    s.lastOutcome = 'rate_limited'; // account quota, not the chat's fault
+  } else if (outcome === 'user_cancelled') {
+    s.lastOutcome = 'cancelled';
+  } else if (outcome === 'text') {
+    if (s.lastOutcome === 'running') s.lastOutcome = 'success';
+  } else {
+    s.lastOutcome = classifyFailure(errorText);
+    s.badStreak = (s.badStreak || 0) + 1;
+  }
+  tabChatState.set(tabId, s);
+  persistTabChatState();
+}
+
+/** Ends an active job: unlocks its tab, records the chat outcome, starts that tab's next job. */
+function finishJob(jobId, outcome, errorText = '') {
+  const job = activeJobs.get(jobId);
+  if (!job) return null;
+  activeJobs.delete(jobId);
   persistSessionJobs();
+  if (job.tabId) {
+    releaseTab(job.tabId);
+    recordTabOutcome(job.tabId, job.isText ? 'text' : outcome, errorText);
+    const tabId = job.tabId;
+    setTimeout(() => processTabQueue(tabId), NEXT_JOB_SETTLE_MS);
+  }
+  return job;
+}
 
-  let tabId = null;
+function stopGenerationOnTab(tabId, jobId) {
+  if (!tabId) return;
   try {
-    tabId = await findOrCreateTab(target, parsedSlot, tabMode, bringTabToFront, chatSessionMode, tabSessionId, jobData.dispatchMode || 'single');
-    if (!tabId) {
-      throw new Error(`No available browser tab found or created for target: ${target} (slot: ${parsedSlot})`);
-    }
+    chrome.tabs.sendMessage(tabId, { action: "CANCEL_GENERATION", data: { jobId } }, () => { void chrome.runtime.lastError; });
+  } catch (e) {}
+  if (chrome.scripting && chrome.scripting.executeScript) {
+    chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        if (typeof window.__MYTHIC_BEI_CANCEL__ === 'function') window.__MYTHIC_BEI_CANCEL__();
+        if (typeof window.__MYTHIC_BEI_CLICK_STOP_BUTTON__ === 'function') window.__MYTHIC_BEI_CLICK_STOP_BUTTON__();
+        const btns = document.querySelectorAll("button[aria-label*='Stop' i], button.stop-button, [aria-label*='Stop response' i]");
+        for (const b of btns) { if (b && !b.disabled) b.click(); }
+      }
+    }).catch(() => {});
+  }
+}
 
-    lockTab(tabId);
-    activeJobs.set(jobId, { tabId, target, prompt, fullPrompt, images, timeoutSeconds, tabMode, bringTabToFront, quality, accountSlot: parsedSlot, aspectRatio, modelQuality, submitted: false, dispatchMode: jobData.dispatchMode || 'single' });
-    emitAuditLog("PROMPT_DISPATCHED", `Dispatched prompt to ${target} tab ${tabId} (slot ${parsedSlot}, batch: ${jobData.dispatchMode === 'multi'})`, {
-      jobId,
-      target,
-      accountSlot: parsedSlot,
-      email: maskEmail(tabEmailsCache.get(tabId)),
-      promptSummary: prompt ? prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '') : '',
-      promptLength: prompt ? prompt.length : 0,
-      isBatch: jobData.dispatchMode === 'multi'
-    });
-    persistSessionJobs();
-  } catch (err) {
-    if (tabId) releaseTab(tabId);
-    activeJobs.delete(jobId);
-    persistSessionJobs();
-    throw err;
+function removeQueuedJob(jobId) {
+  for (const [tabId, q] of tabQueues.entries()) {
+    const idx = q.findIndex(j => j.jobId === jobId);
+    if (idx !== -1) {
+      q.splice(idx, 1);
+      return tabId;
+    }
+  }
+  return null;
+}
+
+/** Puts a job on exactly one worker tab's queue (opening a tab only if the account has none). */
+async function routeJobToTab(job) {
+  const tabs = await getWorkerTabs(job.target, job.accountSlot);
+  let tabId;
+  if (tabs.length === 0) {
+    tabId = await findOrCreateTab(job.target, job.accountSlot, job.tabMode, job.bringTabToFront, 'same_chat', job.tabSessionId, job.dispatchMode);
+    if (!tabId) throw new Error(`No browser tab found or created for target: ${job.target} (slot: ${job.accountSlot})`);
+    slotTabCounts.set(getSlotKey(job.target, job.accountSlot), 1);
+  } else {
+    tabId = pickTabForJob(tabs, job);
   }
 
-  // Ghost Mode: Never steal OS window focus or hijack the user's active browsing tab
-  if (bringTabToFront) {
+  if (!tabQueues.has(tabId)) tabQueues.set(tabId, []);
+  const q = tabQueues.get(tabId);
+  if (q.length >= TAB_QUEUE_LIMIT) {
+    throw new Error(`Tab queue full for ${job.target} (slot ${job.accountSlot}, tab ${tabId}).`);
+  }
+  q.push(job);
+
+  const ahead = q.length - 1 + (isTabWorking(tabId) ? 1 : 0);
+  if (ahead > 0) {
+    emitAuditLog('JOB_QUEUED', `Queued job ${job.jobId} on tab ${tabId} (${ahead} ahead, project: ${job.projectId})`, {
+      jobId: job.jobId, tabId, target: job.target, accountSlot: job.accountSlot,
+      email: maskEmail(tabEmailsCache.get(tabId)), isBatch: job.dispatchMode === 'multi'
+    });
+    sendToBridge({
+      type: "GENERATION_PROGRESS",
+      data: { jobId: job.jobId, step: 'queued', position: ahead, detail: `Queued on tab ${tabId} (${ahead} job(s) ahead)...`, timestamp: Date.now() }
+    });
+  }
+  processTabQueue(tabId);
+  return tabId;
+}
+
+async function processTabQueue(tabId) {
+  if (!tabId || isTabWorking(tabId)) return;
+  const q = tabQueues.get(tabId);
+  if (!q || q.length === 0) return;
+  const job = q.shift();
+
+  if (cancelledJobIds.has(job.jobId)) return processTabQueue(tabId);
+  if (job.deadline && Date.now() > job.deadline) {
+    emitAuditLog('JOB_EXPIRED', `Dropped job ${job.jobId}: expired while waiting in tab ${tabId} queue`, { jobId: job.jobId, tabId, target: job.target, accountSlot: job.accountSlot });
+    sendToBridge({ type: "GENERATION_FAILED", data: { jobId: job.jobId, error: 'Job expired while waiting in the tab queue' } });
+    return processTabQueue(tabId);
+  }
+
+  tabStarting.add(tabId);
+  lockTab(tabId);
+  try {
+    await startJobOnTab(job, tabId);
+    tabStarting.delete(tabId);
+  } catch (err) {
+    tabStarting.delete(tabId);
+    const wasCancelled = cancelledJobIds.has(job.jobId);
+    if (activeJobs.has(job.jobId)) {
+      finishJob(job.jobId, wasCancelled ? 'user_cancelled' : 'failed', err.message || String(err));
+    } else {
+      releaseTab(tabId);
+      setTimeout(() => processTabQueue(tabId), 200);
+    }
+    if (!wasCancelled) {
+      sendToBridge({ type: "GENERATION_FAILED", data: { jobId: job.jobId, error: err.message || String(err) } });
+    }
+  }
+}
+
+async function prepareWorkerTab(tab, target, slot, chatMode, tabMode, bringTabToFront) {
+  const tabId = tab.id;
+  await organizeTabIntoBEIGroup(tabId, tabMode, bringTabToFront);
+  // Chrome Memory Saver must never discard a worker tab mid-queue.
+  try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}
+
+  if (tab.discarded) {
     try {
-      await chrome.tabs.update(tabId, { active: true });
-      const tabInfo = await chrome.tabs.get(tabId);
-      if (tabInfo && tabInfo.windowId) {
-        try { await chrome.windows.update(tabInfo.windowId, { focused: true }); } catch (e) {}
-      }
+      await chrome.tabs.reload(tabId);
+      await waitForTabReady(tabId, 15000);
     } catch (e) {}
   }
 
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: "GENERATION_PROGRESS",
-      data: {
-        jobId,
-        step: "tab_routed",
-        detail: `Routed to ${target} tab (slot /u/${parsedSlot}/, AR: ${aspectRatio}, Quality: ${modelQuality})...`,
-        timestamp: Date.now()
-      }
-    }));
+  const url = tab.url || tab.pendingUrl || '';
+  let navigateTo = null;
+  if (target === 'gemini') {
+    const inApp = /gemini\.google\.com\/(u\/\d+\/)?app/i.test(url);
+    const inThread = /\/app\/[a-zA-Z0-9_-]{8,}/.test(url);
+    if (!inApp || (chatMode === 'new_chat' && inThread)) navigateTo = `https://gemini.google.com/u/${slot}/app`;
+  } else if (target === 'chatgpt') {
+    const isClean = /^https?:\/\/(?:chatgpt\.com|chat\.openai\.com)\/?(?:\?.*)?$/i.test(url);
+    if (chatMode === 'new_chat' && !isClean) navigateTo = 'https://chatgpt.com/';
+  }
+  if (navigateTo) {
+    try {
+      await chrome.tabs.update(tabId, { url: navigateTo });
+      await waitForTabReady(tabId, 15000);
+      emitAuditLog('TAB_NAVIGATED', `Navigated tab ${tabId} to ${navigateTo} (${chatMode})`, { tabId, target, accountSlot: slot, email: maskEmail(tabEmailsCache.get(tabId)) });
+    } catch (e) {}
   }
 
-  await dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds, parsedSlot, images, tabMode, bringTabToFront, aspectRatio, quality, modelQuality, chatSessionMode);
+  // Ghost Mode: only steal focus when explicitly requested
+  if (bringTabToFront) {
+    try {
+      await chrome.tabs.update(tabId, { active: true });
+      const info = await chrome.tabs.get(tabId);
+      if (info && info.windowId) { try { await chrome.windows.update(info.windowId, { focused: true }); } catch (e) {} }
+    } catch (e) {}
+  }
+
+  await ensureContentScriptInjected(tabId, target);
 }
 
-async function processNextInQueue(target, slot) {
-  const slotKey = getSlotKey(target, slot);
-  const queue = slotQueues.get(slotKey);
-  if (queue && queue.length > 0) {
-    const nextJob = queue.shift();
-    console.log(`[MythicFrame BEI Worker] Concurrency Guard: Starting next queued job ${nextJob.jobId} for slot ${slotKey}`);
-    try {
-      await startJob(nextJob);
-    } catch (err) {
-      const job = activeJobs.get(nextJob.jobId);
-      if (job && job.tabId) releaseTab(job.tabId);
-      activeJobs.delete(nextJob.jobId);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: "GENERATION_FAILED",
-          data: { jobId: nextJob.jobId, error: err.message || String(err) }
-        }));
+async function startJobOnTab(job, tabId) {
+  const { jobId, target, prompt, fullPrompt, images = [], timeoutSeconds, tabMode, bringTabToFront, quality, aspectRatio, modelQuality, accountSlot, dispatchMode, projectId, source } = job;
+  if (cancelledJobIds.has(jobId)) throw new Error('Job was cancelled before it started');
+
+  let tab;
+  try { tab = await chrome.tabs.get(tabId); } catch (e) { throw new Error(`Worker tab ${tabId} no longer exists`); }
+
+  const [chatMode, chatReason] = decideChatMode(tab, job);
+  await prepareWorkerTab(tab, target, accountSlot, chatMode, tabMode, bringTabToFront);
+  if (cancelledJobIds.has(jobId)) throw new Error('Job was cancelled before it started');
+
+  if (!tabEmailsCache.get(tabId)) {
+    try { await extractTabEmail(tabId, target, accountSlot); } catch (e) {}
+  }
+
+  activeJobs.set(jobId, {
+    tabId, target, prompt, fullPrompt, images, timeoutSeconds, tabMode, bringTabToFront, quality,
+    accountSlot, aspectRatio, modelQuality, submitted: false, dispatchMode: dispatchMode || 'single',
+    projectId, chatMode, chatReason, receivedAt: job.receivedAt, startedAt: Date.now()
+  });
+  persistSessionJobs();
+  noteChatTurn(tabId, job, chatMode);
+
+  emitAuditLog("PROMPT_DISPATCHED", `Dispatched prompt to ${target} tab ${tabId} (slot ${accountSlot}, chat: ${chatMode} - ${chatReason}, project: ${projectId}, source: ${source || 'unknown'}, batch: ${dispatchMode === 'multi'})`, {
+    jobId, tabId, target, accountSlot,
+    email: maskEmail(tabEmailsCache.get(tabId)),
+    promptSummary: prompt ? prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '') : '',
+    promptLength: prompt ? prompt.length : 0,
+    isBatch: dispatchMode === 'multi'
+  });
+
+  sendToBridge({
+    type: "GENERATION_PROGRESS",
+    data: {
+      jobId,
+      step: "tab_routed",
+      detail: `Routed to ${target} tab ${tabId} (slot /u/${accountSlot}/, ${chatMode === 'new_chat' ? 'new chat' : 'same chat'}: ${chatReason}, AR: ${aspectRatio})...`,
+      timestamp: Date.now()
+    }
+  });
+
+  await dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds, accountSlot, images, tabMode, bringTabToFront, aspectRatio, quality, modelQuality, chatMode);
+}
+
+/**
+ * Drops queued/running jobs the server no longer tracks (it timed out, was cancelled,
+ * or restarted). Prevents stale prompts from being sent minutes later.
+ */
+function reconcileWithServer(pendingJobIds) {
+  if (!Array.isArray(pendingJobIds)) return;
+  const pending = new Set(pendingJobIds);
+  const now = Date.now();
+  const GRACE_MS = 15000;
+  for (const [tabId, q] of tabQueues.entries()) {
+    for (let i = q.length - 1; i >= 0; i--) {
+      const j = q[i];
+      if (!pending.has(j.jobId) && (now - (j.receivedAt || 0)) > GRACE_MS) {
+        q.splice(i, 1);
+        rememberCancelled(j.jobId);
+        emitAuditLog('JOB_DROPPED', `Dropped queued job ${j.jobId} on tab ${tabId}: server no longer waiting for it`, { jobId: j.jobId, tabId, target: j.target, accountSlot: j.accountSlot });
       }
-      processNextInQueue(target, slot);
+    }
+  }
+  for (const [jobId, job] of Array.from(activeJobs.entries())) {
+    if (!pending.has(jobId) && (now - (job.startedAt || job.receivedAt || 0)) > GRACE_MS) {
+      rememberCancelled(jobId);
+      stopGenerationOnTab(job.tabId, jobId);
+      emitAuditLog('JOB_DROPPED', `Stopped job ${jobId} on tab ${job.tabId}: server no longer waiting for it`, { jobId, tabId: job.tabId, target: job.target, accountSlot: job.accountSlot });
+      finishJob(jobId, 'failed', 'stuck: server gave up on this job');
     }
   }
 }
@@ -1618,7 +1965,7 @@ async function handleBridgeCommand(msg) {
   }
 
   if (type === "EXECUTE_PROMPT") {
-    const { jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'same_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single', preferredEmail, email } = data;
+    const { jobId, target = "gemini", prompt, projectId = 'default', source = 'unknown', fullPrompt, aspectRatio, modelQuality, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'same_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single', preferredEmail, email } = data;
     let parsedSlot = (typeof data.accountSlot === 'number') ? data.accountSlot : undefined;
 
     // Account Priority System:
@@ -1684,44 +2031,20 @@ async function handleBridgeCommand(msg) {
       }
     }
 
-    const slotKey = getSlotKey(target, parsedSlot);
-
-    // Concurrency Guard: If the assigned slot is still busy, queue rather than colliding on the same tab
-    if (isSlotBusy(target, parsedSlot)) {
-      console.log(`[MythicFrame BEI Worker] Concurrency Guard: Slot ${slotKey} is currently busy. Queuing job ${jobId}...`);
-      if (!slotQueues.has(slotKey)) {
-        slotQueues.set(slotKey, []);
-      }
-      const queue = slotQueues.get(slotKey);
-      if (queue.length >= 16) {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: "GENERATION_FAILED",
-            data: {
-              jobId,
-              error: `Slot queue full for ${target} (slot ${parsedSlot}). Another generation is actively running.`
-            }
-          }));
-        }
-        return;
-      }
-      queue.push({ jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot: parsedSlot, timeoutSeconds, images, tabMode, bringTabToFront, chatSessionMode, tabSessionId, quality, dispatchMode });
-      return;
-    }
-
+    // Per-tab queues: the job goes to exactly ONE worker tab of this account (least loaded).
+    // Tabs of the same account work in parallel; each tab runs its own queue in order.
+    const receivedAt = Date.now();
+    const jobData = {
+      jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot: parsedSlot, timeoutSeconds, images,
+      tabMode, bringTabToFront, chatSessionMode, tabSessionId, quality, dispatchMode,
+      projectId: projectId || 'default', source, receivedAt,
+      deadline: receivedAt + 30 * 60 * 1000 // hard safety net; the server normally cancels much earlier
+    };
     try {
-      await startJob({ jobId, target, prompt, fullPrompt, aspectRatio, modelQuality, accountSlot: parsedSlot, timeoutSeconds, images, tabMode, bringTabToFront, chatSessionMode, tabSessionId, quality, dispatchMode });
+      await routeJobToTab(jobData);
     } catch (err) {
-      const job = activeJobs.get(jobId);
-      if (job && job.tabId) releaseTab(job.tabId);
-      activeJobs.delete(jobId);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: "GENERATION_FAILED",
-          data: { jobId, error: err.message || String(err) }
-        }));
-      }
-      processNextInQueue(target, parsedSlot);
+      removeQueuedJob(jobId);
+      sendToBridge({ type: "GENERATION_FAILED", data: { jobId, error: err.message || String(err) } });
     }
     return;
   }
@@ -1737,7 +2060,7 @@ async function handleBridgeCommand(msg) {
       if (!tabId) throw new Error(`No browser tab found for ${target} slot ${parsedSlot}`);
 
       lockTab(tabId);
-      activeJobs.set(jobId, { tabId, target, prompt, accountSlot: parsedSlot, isText: true });
+      activeJobs.set(jobId, { tabId, target, prompt, accountSlot: parsedSlot, isText: true, startedAt: Date.now() });
 
       chrome.tabs.sendMessage(tabId, {
         action: "EXECUTE_TEXT_PROMPT",
@@ -1792,78 +2115,38 @@ async function handleBridgeCommand(msg) {
 
   if (type === "CANCEL_GENERATION") {
     const jobId = data?.jobId;
+    const reason = data?.reason || 'user';
     if (jobId) {
-      // Remove from any queue
-      for (const [slotKey, queue] of slotQueues.entries()) {
-        const idx = queue.findIndex(j => j.jobId === jobId);
-        if (idx !== -1) {
-          queue.splice(idx, 1);
-          console.log(`[MythicFrame BEI Worker] Removed cancelled job ${jobId} from queue for slot ${slotKey}`);
-        }
+      // Single job: touch ONLY that job's tab. Other tabs keep generating.
+      rememberCancelled(jobId);
+      const queuedOn = removeQueuedJob(jobId);
+      if (queuedOn) {
+        console.log(`[MythicFrame BEI Worker] Removed cancelled job ${jobId} from tab ${queuedOn} queue (${reason})`);
+        emitAuditLog('JOB_DEQUEUED', `Removed job ${jobId} from tab ${queuedOn} queue (${reason})`, { jobId, tabId: queuedOn });
       }
-      if (activeJobs.has(jobId)) {
-        const job = activeJobs.get(jobId);
-        if (job && job.tabId) releaseTab(job.tabId);
-        activeJobs.delete(jobId);
-        try {
-          chrome.tabs.sendMessage(job.tabId, { action: "CANCEL_GENERATION", data: { jobId } });
-        } catch (e) {}
-        if (chrome.scripting && chrome.scripting.executeScript && job.tabId) {
-          chrome.scripting.executeScript({
-            target: { tabId: job.tabId },
-            func: () => {
-              if (typeof window.__MYTHIC_BEI_CANCEL__ === 'function') window.__MYTHIC_BEI_CANCEL__();
-              if (typeof window.__MYTHIC_BEI_CLICK_STOP_BUTTON__ === 'function') window.__MYTHIC_BEI_CLICK_STOP_BUTTON__();
-              const btns = document.querySelectorAll("button[aria-label*='Stop' i], button.stop-button, [aria-label*='Stop response' i]");
-              for (const b of btns) { if (b && !b.disabled) b.click(); }
-            }
-          }).catch(() => {});
-        }
-        processNextInQueue(job.target, job.accountSlot);
+      const job = activeJobs.get(jobId);
+      if (job) {
+        stopGenerationOnTab(job.tabId, jobId);
+        finishJob(jobId, reason === 'timeout' ? 'failed' : 'user_cancelled', reason === 'timeout' ? 'timed out (stuck)' : '');
       }
     } else {
-      // Cancel all
-      slotQueues.clear();
-      busyTabs.clear();
-      for (const [id, job] of activeJobs.entries()) {
-        try {
-          chrome.tabs.sendMessage(job.tabId, { action: "CANCEL_GENERATION", data: { jobId: id } });
-        } catch (e) {}
-        if (chrome.scripting && chrome.scripting.executeScript && job.tabId) {
-          chrome.scripting.executeScript({
-            target: { tabId: job.tabId },
-            func: () => {
-              if (typeof window.__MYTHIC_BEI_CANCEL__ === 'function') window.__MYTHIC_BEI_CANCEL__();
-              if (typeof window.__MYTHIC_BEI_CLICK_STOP_BUTTON__ === 'function') window.__MYTHIC_BEI_CLICK_STOP_BUTTON__();
-              const btns = document.querySelectorAll("button[aria-label*='Stop' i], button.stop-button, [aria-label*='Stop response' i]");
-              for (const b of btns) { if (b && !b.disabled) b.click(); }
-            }
-          }).catch(() => {});
-        }
+      // Cancel all: clear every tab queue and stop every BEI tab.
+      for (const q of tabQueues.values()) for (const j of q) rememberCancelled(j.jobId);
+      tabQueues.clear();
+      for (const [id, job] of Array.from(activeJobs.entries())) {
+        rememberCancelled(id);
+        stopGenerationOnTab(job.tabId, id);
+        finishJob(id, 'user_cancelled');
       }
-      activeJobs.clear();
-    }
-    // Broadcast CLEAR_COMPOSER and click stop buttons on any open Gemini or ChatGPT tabs
-    chrome.tabs.query({}).then(tabs => {
-      for (const tab of tabs) {
-        if (tab.id && tab.url && (tab.url.includes("gemini.google.com") || tab.url.includes("chatgpt.com"))) {
-          try {
-            chrome.tabs.sendMessage(tab.id, { action: "CANCEL_GENERATION" });
-          } catch (e) {}
-          if (chrome.scripting && chrome.scripting.executeScript) {
-            chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              func: () => {
-                if (typeof window.__MYTHIC_BEI_CANCEL__ === 'function') window.__MYTHIC_BEI_CANCEL__();
-                if (typeof window.__MYTHIC_BEI_CLICK_STOP_BUTTON__ === 'function') window.__MYTHIC_BEI_CLICK_STOP_BUTTON__();
-                const btns = document.querySelectorAll("button[aria-label*='Stop' i], button.stop-button, [aria-label*='Stop response' i]");
-                for (const b of btns) { if (b && !b.disabled) b.click(); }
-              }
-            }).catch(() => {});
+      busyTabs.clear();
+      chrome.tabs.query({}).then(tabs => {
+        for (const tab of tabs) {
+          if (tab.id && tab.url && (tab.url.includes("gemini.google.com") || tab.url.includes("chatgpt.com"))) {
+            stopGenerationOnTab(tab.id);
           }
         }
-      }
-    });
+      });
+    }
     return;
   }
 
@@ -2046,6 +2329,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       job.submitted = true;
       if (chatUrl) job.chatUrl = chatUrl;
       persistSessionJobs();
+      const st = job.tabId ? tabChatState.get(job.tabId) : null;
+      const conv = extractConversationId(chatUrl);
+      if (st && conv) { st.chatId = conv; persistTabChatState(); }
       console.log(`[MythicFrame BEI] Job ${jobId} marked as submitted (chatUrl: ${chatUrl}).`);
     }
     sendResponse({ ack: true });
@@ -2054,15 +2340,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GENERATION_COMPLETED") {
     let { jobId, image, target, metadata } = message.data;
-    const job = activeJobs.get(jobId);
-    if (job && job.tabId) releaseTab(job.tabId);
-    const jobTarget = job?.target || target;
-    const jobSlot = job?.accountSlot ?? 0;
-    activeJobs.delete(jobId);
-    persistSessionJobs();
-
-    // Concurrency Guard: Process next queued job for this slot
-    processNextInQueue(jobTarget, jobSlot);
+    // Ends the job, records a good result for this tab's chat, and starts the tab's next job.
+    const job = finishJob(jobId, 'success');
+    if (job && metadata) {
+      metadata.tabId = job.tabId;
+      metadata.chatSessionMode = job.chatMode;
+      metadata.chatDecision = job.chatReason;
+      metadata.projectId = job.projectId;
+    }
+    if (job && job.tabId && metadata && (metadata.chatUrl || metadata.conversationUrl)) {
+      const st = tabChatState.get(job.tabId);
+      const conv = extractConversationId(metadata.chatUrl || metadata.conversationUrl);
+      if (st && conv) { st.chatId = conv; persistTabChatState(); }
+    }
 
     (async () => {
       let finalImage = image;
@@ -2115,9 +2405,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "TEXT_COMPLETED") {
     const { jobId, text, target } = message.data || {};
-    const job = activeJobs.get(jobId);
-    if (job && job.tabId) releaseTab(job.tabId);
-    activeJobs.delete(jobId);
+    finishJob(jobId, 'text');
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: "TEXT_COMPLETED",
@@ -2134,9 +2422,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "TEXT_FAILED") {
     const { jobId, error } = message.data || {};
-    const job = activeJobs.get(jobId);
-    if (job && job.tabId) releaseTab(job.tabId);
-    activeJobs.delete(jobId);
+    finishJob(jobId, 'text');
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: "TEXT_FAILED",
@@ -2152,20 +2438,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GENERATION_FAILED") {
     const { jobId, error, isRateLimited } = message.data;
-    const job = activeJobs.get(jobId);
-    if (job && job.tabId) releaseTab(job.tabId);
-    const jobTarget = job?.target;
-    const jobSlot = job?.accountSlot ?? 0;
-    activeJobs.delete(jobId);
+    const rateLimited = Boolean(isRateLimited || /quota|limit reached|limit resets|rate limit/i.test(error || ''));
+    const job = finishJob(jobId, rateLimited ? 'rate_limited' : 'failed', error);
 
     // If quota or rate limit exceeded, mark slot as exhausted
-    if (isRateLimited || /quota|limit reached|limit resets|rate limit/i.test(error || '')) {
-      if (jobTarget) markSlotExhausted(jobTarget, jobSlot);
-    }
-
-    // Concurrency Guard: Process next queued job for this slot
-    if (jobTarget) {
-      processNextInQueue(jobTarget, jobSlot);
+    if (rateLimited && job && job.target) {
+      markSlotExhausted(job.target, job.accountSlot ?? 0);
     }
 
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -2205,16 +2483,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GENERATION_CANCELLED") {
     const { jobId, reason } = message.data || {};
-    const job = activeJobs.get(jobId);
-    if (job && job.tabId) releaseTab(job.tabId);
-    const jobTarget = job?.target;
-    const jobSlot = job?.accountSlot ?? 0;
-    activeJobs.delete(jobId);
-
-    // Concurrency Guard: Process next queued job for this slot
-    if (jobTarget) {
-      processNextInQueue(jobTarget, jobSlot);
-    }
+    // In-page "stuck with no output" cancels count as a bad result for this chat.
+    finishJob(jobId, /stuck|no output|timed? ?out/i.test(reason || '') ? 'failed' : 'user_cancelled', reason || '');
 
     console.log(`[MythicFrame BEI Worker] Job ${jobId} cancelled: ${reason}`);
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -2478,7 +2748,18 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   releaseTab(tabId);
   const cachedEmail = tabEmailsCache.get(tabId);
   tabEmailsCache.delete(tabId);
+  tabChatState.delete(tabId);
+  persistTabChatState();
   let activeJobFound = false;
+
+  // Jobs still waiting on the closed tab move to another tab of the same account.
+  const orphaned = tabQueues.get(tabId) || [];
+  tabQueues.delete(tabId);
+  for (const job of orphaned) {
+    routeJobToTab(job).catch(err => {
+      sendToBridge({ type: "GENERATION_FAILED", data: { jobId: job.jobId, error: `Tab closed and re-routing failed: ${err.message || err}` } });
+    });
+  }
 
   for (const [jobId, job] of activeJobs.entries()) {
     if (job.tabId === tabId) {
@@ -2486,6 +2767,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       const target = job.target;
       const slot = job.accountSlot;
       activeJobs.delete(jobId);
+      persistSessionJobs();
       emitAuditLog("TAB_CLOSED", `Tab ${tabId} was closed while executing job ${jobId}`, {
         tabId,
         target,
@@ -2500,7 +2782,6 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
           data: { jobId, error: "Browser tab was closed during generation" }
         }));
       }
-      processNextInQueue(target, slot);
     }
   }
 

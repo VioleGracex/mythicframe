@@ -81,6 +81,22 @@ export function setBEIAccountPriorityOrder(order: string[]): void {
   }
 }
 
+/**
+ * Stable key for "which project is this generation for". The extension starts a NEW chat
+ * whenever a tab's next job belongs to a different project than its current chat.
+ * Explicit projectId wins; otherwise derived from the active game context + art style.
+ */
+export function getBEIProjectKey(params: { projectId?: string; gameContext?: any; styleSnippet?: string }): string {
+  if (params && typeof params.projectId === 'string' && params.projectId.trim()) return params.projectId.trim();
+  const ctx = (params && params.gameContext) || {};
+  const style = ctx.defaultStyleId || (params && params.styleSnippet ? String(params.styleSnippet).slice(0, 200) : '');
+  const raw = [ctx.setting || '', ctx.tone || '', ctx.visualConstraints || '', style].join('|').trim();
+  if (!raw.replace(/\|/g, '')) return 'default';
+  let h = 0;
+  for (let i = 0; i < raw.length; i++) h = ((h << 5) - h + raw.charCodeAt(i)) | 0;
+  return `ctx_${(h >>> 0).toString(36)}`;
+}
+
 export function getBEIPrioritySlots(initialSlot: number = 0): number[] {
   const order = getBEIAccountPriorityOrder();
   const geminiSlots: number[] = [];
@@ -551,7 +567,13 @@ export const generateWithBEI = async (
     const currentSlot = config.target === 'gemini' ? prioritySlots[slotIndex] : (config.accountSlot || 0);
     triedSlots.add(currentSlot);
 
+    // Own job id per slot attempt: lets abort/rescue target exactly this job instead of
+    // cancelling every tab or returning another job's (older) image.
+    const clientJobId = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const payload = {
+      clientJobId,
+      source: 'web-ui',
+      projectId: getBEIProjectKey(params),
       target: config.target,
       prompt: assembled.imagePromptDirective,
       fullPrompt: assembled.fullPrompt,
@@ -569,12 +591,11 @@ export const generateWithBEI = async (
 
     if (params.signal) {
       if (params.signal.aborted) {
-        cancelBEIGeneration().catch(() => {});
         throw new DOMException('Generation aborted', 'AbortError');
       }
       params.signal.addEventListener('abort', () => {
-        cancelBEIGeneration().catch(() => {});
-      });
+        cancelBEIGeneration(clientJobId).catch(() => {});
+      }, { once: true });
     }
 
     setLastBEIJobContext({
@@ -594,7 +615,7 @@ export const generateWithBEI = async (
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (params.signal?.aborted) {
-        cancelBEIGeneration().catch(() => {});
+        cancelBEIGeneration(clientJobId).catch(() => {});
         throw new DOMException('Generation aborted', 'AbortError');
       }
 
@@ -605,10 +626,10 @@ export const generateWithBEI = async (
           body: JSON.stringify(payload),
           signal: params.signal,
         });
-        if (response && response.ok) break;
+        if (response) break; // server answered (ok or error): never re-send the same prompt
       } catch (err: any) {
         if (params.signal?.aborted || err?.name === 'AbortError') {
-          cancelBEIGeneration().catch(() => {});
+          cancelBEIGeneration(clientJobId).catch(() => {});
           throw err;
         }
         lastError = err;
@@ -619,18 +640,18 @@ export const generateWithBEI = async (
             body: JSON.stringify(payload),
             signal: params.signal,
           });
-          if (response && response.ok) break;
+          if (response) break;
         } catch (fallbackErr: any) {
           if (params.signal?.aborted || fallbackErr?.name === 'AbortError') {
-            cancelBEIGeneration().catch(() => {});
+            cancelBEIGeneration(clientJobId).catch(() => {});
             throw fallbackErr;
           }
           lastError = fallbackErr;
         }
       }
 
-      // Candidate Rescue Check: If fetch broke or timed out, see if server already captured the completed image
-      const rescued = await refetchBEIAsset();
+      // Candidate Rescue Check: If fetch broke or timed out, see if server already captured THIS job's image
+      const rescued = await refetchBEIAsset(clientJobId);
       if (rescued && rescued.image) {
         const { recordBEISlotUsage } = await import('./quotaTrackerService');
         recordBEISlotUsage(config.target, currentSlot, 'success');
@@ -660,8 +681,8 @@ export const generateWithBEI = async (
     }
 
     if (!response) {
-      // One last rescue attempt
-      const finalRescue = await refetchBEIAsset();
+      // One last rescue attempt (this job only)
+      const finalRescue = await refetchBEIAsset(clientJobId);
       if (finalRescue && finalRescue.image) {
         const { recordBEISlotUsage } = await import('./quotaTrackerService');
         recordBEISlotUsage(config.target, currentSlot, 'success');
@@ -726,7 +747,7 @@ export const generateWithBEI = async (
 
     const result = await response.json();
     if (!result || !result.image) {
-      const rescued = await refetchBEIAsset();
+      const rescued = await refetchBEIAsset(clientJobId);
       if (rescued && rescued.image) {
         const { recordBEISlotUsage } = await import('./quotaTrackerService');
         recordBEISlotUsage(config.target, currentSlot, 'success');

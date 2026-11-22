@@ -48,6 +48,8 @@ export interface BEIGenerateOptions {
   quality?: 'standard' | 'high' | 'ultra_original';
   dispatchMode?: 'single' | 'multi';
   chatSessionMode?: 'same_chat' | 'temporary_chat' | 'new_chat';
+  /** Project the job belongs to. A tab switching to a different project always starts a new chat. */
+  projectId?: string;
 }
 
 export interface BEIGenerateResult {
@@ -473,6 +475,14 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     chatSessionMode = 'same_chat'
   } = options;
 
+  let projectId = options.projectId;
+  if (!projectId) {
+    try {
+      const cfgPath = path.join(resolveProjectRoot(), 'mythic_project.json');
+      if (fs.existsSync(cfgPath)) projectId = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))?.projectName;
+    } catch {}
+  }
+
   // Process reference images (convert local file paths to base64 data URIs if necessary)
   const processedImages: string[] = [];
   for (const img of images) {
@@ -499,7 +509,9 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     bringTabToFront,
     quality,
     dispatchMode,
-    chatSessionMode
+    chatSessionMode,
+    projectId: projectId || 'default',
+    source: 'mcp'
   };
 
   let result: any = null;

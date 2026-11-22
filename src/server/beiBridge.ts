@@ -185,6 +185,11 @@ interface PendingJob {
   timeoutTimer: NodeJS.Timeout;
   isText?: boolean;
   accountSlot?: number;
+  // Timeout bookkeeping (image jobs): budget applies from the moment the job STARTS on a tab,
+  // not while it waits in that tab's queue.
+  timeoutSeconds?: number;
+  startedAt?: number;
+  hardDeadline?: number;
 }
 
 export class BEIBridgeServer {
@@ -259,6 +264,26 @@ export class BEIBridgeServer {
   public payloadHistory: Map<string, BEIPayloadStatus> = new Map();
   private progressListeners: Set<(data: any) => void> = new Set();
   private eventResponses: Set<http.ServerResponse> = new Set();
+
+  /**
+   * Times out a pending image job AND tells the extension to drop it. Without the cancel,
+   * the extension kept the job in its tab queue and ran it minutes later (duplicate prompts).
+   */
+  private expirePendingJob(jobId: string, message: string) {
+    const job = this.pendingJobs.get(jobId);
+    if (!job) return;
+    clearTimeout(job.timeoutTimer);
+    this.pendingJobs.delete(jobId);
+    try {
+      if (this.isConnected()) {
+        this.extensionSocket!.send(JSON.stringify({
+          type: 'CANCEL_GENERATION',
+          data: { jobId, reason: 'timeout' }
+        }));
+      }
+    } catch {}
+    job.reject(new Error(message));
+  }
 
   constructor(port = 58925) {
     this.port = port;
@@ -672,7 +697,9 @@ export class BEIBridgeServer {
 
     if (type === 'ping') {
       this.lastHeartbeat = Date.now();
-      ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+      // pendingJobIds lets the extension drop queued/running jobs the server already gave up on
+      // (e.g. after a missed cancel or a server restart), so stale prompts are never sent later.
+      ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now(), pendingJobIds: Array.from(this.pendingJobs.keys()) }));
       return;
     }
 
@@ -764,16 +791,29 @@ export class BEIBridgeServer {
           saveJobSessionRecord(jobId, payloadRecord);
         }
       }
-      if (jobId && this.pendingJobs.has(jobId)) {
+      if (jobId && this.pendingJobs.has(jobId) && !this.pendingJobs.get(jobId)!.isText) {
         const job = this.pendingJobs.get(jobId)!;
+        const step = data?.step || '';
+        const budgetMs = (job.timeoutSeconds || 150) * 1000;
+        const now = Date.now();
+        let delayMs: number;
+        if (step === 'queued') {
+          // Waiting in a tab queue: allow the jobs ahead of it to finish first (bounded).
+          const ahead = Math.max(1, Number(data?.position) || 1);
+          delayMs = Math.min(budgetMs * (ahead + 1), 30 * 60 * 1000);
+        } else if (step === 'tab_routed' || !job.startedAt) {
+          // Job actually started on its tab: the real generation budget starts now.
+          job.startedAt = now;
+          job.hardDeadline = now + budgetMs + 180000; // budget + 3 min grace for 2K capture
+          delayMs = budgetMs;
+        } else {
+          // Activity heartbeat: extend for up to 3 min of inactivity, never past the hard deadline.
+          delayMs = Math.min(180000, Math.max(5000, (job.hardDeadline || now + budgetMs) - now));
+        }
         clearTimeout(job.timeoutTimer);
-        // Extend timeout while actively receiving progress updates (10 minutes per heartbeat ping)
         job.timeoutTimer = setTimeout(() => {
-          if (this.pendingJobs.has(jobId)) {
-            this.pendingJobs.delete(jobId);
-            job.reject(new Error(`BEI Generation timed out while awaiting browser completion for target ${job.target}`));
-          }
-        }, 600000);
+          this.expirePendingJob(jobId, `BEI Generation timed out while awaiting browser completion for target ${job.target}`);
+        }, delayMs);
       }
       if (data) {
         this.broadcastProgress(data);
@@ -1158,24 +1198,27 @@ export class BEIBridgeServer {
 
         const effectiveTimeout = timeoutSeconds ? Math.min(Math.max(timeoutSeconds, 30), 900) : 150;
 
-        const jobId = `bei_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        // Callers may supply their own job id so they can cancel exactly this job (not every job).
+        const clientJobId = typeof payload.clientJobId === 'string' && /^[A-Za-z0-9_-]{6,64}$/.test(payload.clientJobId) && !this.pendingJobs.has(payload.clientJobId)
+          ? payload.clientJobId
+          : null;
+        const jobId = clientJobId || `bei_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const hasExplicitSlot = payload.accountSlot !== undefined;
-        console.log(`[MythicFrame BEI Bridge] Dispatching job ${jobId} to extension (Target: ${target}, Slot: ${accountSlot}, Images: ${images.length}, Timeout: ${effectiveTimeout}s, ChatMode: ${chatSessionMode}, Batch: ${payload.dispatchMode === 'multi'})`);
+        const projectId = typeof payload.projectId === 'string' ? payload.projectId.slice(0, 200) : '';
+        const source = typeof payload.source === 'string' ? payload.source.slice(0, 40) : 'unknown';
+        console.log(`[MythicFrame BEI Bridge] Dispatching job ${jobId} to extension (Target: ${target}, Source: ${source}, Slot: ${accountSlot}, Images: ${images.length}, Timeout: ${effectiveTimeout}s, ChatMode: ${chatSessionMode}, Project: ${projectId || 'none'}, Batch: ${payload.dispatchMode === 'multi'})`);
         writeSessionAuditLog({
           event: 'PROMPT_DISPATCHED',
           target,
           accountSlot: hasExplicitSlot ? accountSlot : undefined,
           jobId,
           isBatch: payload.dispatchMode === 'multi',
-          details: `Dispatched image generation job (prompt len: ${prompt.length}, timeout: ${effectiveTimeout}s, batch: ${payload.dispatchMode === 'multi'})`
+          details: `Dispatched image generation job (target: ${target}, source: ${source}, prompt len: ${prompt.length}, timeout: ${effectiveTimeout}s, batch: ${payload.dispatchMode === 'multi'})`
         });
 
+        // Initial timer only covers routing/queueing until the extension reports 'queued' or 'tab_routed'.
         const timeoutTimer = setTimeout(() => {
-          if (this.pendingJobs.has(jobId)) {
-            const job = this.pendingJobs.get(jobId)!;
-            this.pendingJobs.delete(jobId);
-            job.reject(new Error(`BEI Generation timed out after ${effectiveTimeout} seconds in target ${target}`));
-          }
+          this.expirePendingJob(jobId, `BEI Generation timed out after ${effectiveTimeout} seconds in target ${target}`);
         }, effectiveTimeout * 1000);
 
         const jobPromise = new Promise<{ success: boolean; image: string; jobId: string; metadata?: any }>((resolve, reject) => {
@@ -1186,7 +1229,8 @@ export class BEIBridgeServer {
             accountSlot: hasExplicitSlot ? accountSlot : undefined,
             resolve,
             reject,
-            timeoutTimer
+            timeoutTimer,
+            timeoutSeconds: effectiveTimeout
           });
         });
 
@@ -1245,6 +1289,8 @@ export class BEIBridgeServer {
             bringTabToFront,
             chatSessionMode,
             tabSessionId,
+            projectId,
+            source,
             quality: payload.quality || 'ultra_original',
             dispatchMode: payload.dispatchMode || 'single'
           }

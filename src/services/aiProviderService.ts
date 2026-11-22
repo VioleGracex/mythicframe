@@ -72,6 +72,8 @@ export interface UnifiedGenerationParams {
   seed?: number | null;
   chatSessionMode?: 'temporary_chat' | 'same_chat' | 'new_chat';
   tabSessionId?: string;
+  /** Optional explicit project id; BEI starts a new chat when a tab switches projects. */
+  projectId?: string;
   hasHoldingImages?: boolean;
   characterTool?: CharacterToolState;
 }

@@ -389,7 +389,10 @@ const Settings: React.FC<SettingsProps> = ({
     if (tab.target === 'gemini') {
       handleUpdateBEIConfig({ target: 'gemini', accountSlot: tab.accountSlot ?? 0 });
     } else {
-      handleUpdateBEIConfig({ target: 'chatgpt' });
+      // Gemini is the main engine: clicking a ChatGPT account row must not silently switch every
+      // future generation to ChatGPT. Use the explicit engine target toggle for that.
+      setBeiFeedback('ChatGPT is used only when selected as the BEI engine target above.');
+      setTimeout(() => setBeiFeedback(null), 3000);
     }
   };
 
