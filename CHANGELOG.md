@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.11] — 2026-11-22 *(BEI Extension v1.6.2)*
+
+### Fixed
+- **Mixed old/new image downloads**: when Gemini changed the tab URL to `/app/<chat id>` after submission, the extension treated it as a reload and started a second "recovery" watcher next to the running one. That watcher grabbed the first loaded image, which was Gemini's half-rendered preview (old image fading into the new one), and returned it. The real full-size image arrived later and was discarded.
+  - Recovery now runs only after a real reload: the background asks the tab whether it is still watching the job (`JOB_STATUS`) and skips recovery while it is, or while the prompt is still being dispatched.
+  - The page itself also refuses a second watcher for a job it is already running.
+  - Recovery after a real reload waits until Gemini has finished, matches the response to this job's prompt (never an older turn's image), requires the image to be stable across two checks, and captures the full-size master via Download (shared with the main path).
+  - If the prompt is not in the chat after a reload, the job fails instead of re-sending the prompt (no duplicates).
+  - A second `GENERATION_COMPLETED` for an already-finished job is dropped instead of forwarded.
+- **Audit log**: every capture is logged as `IMAGE_CAPTURED` with method, size and dimensions; images under 300 KB are flagged `IMAGE_CAPTURED_SMALL` (likely a preview), and reload recoveries as `JOB_RECOVERY`.
+
+---
+
 ## [1.6.10] — 2026-11-22 *(BEI Extension v1.6.1)*
 
 ### Fixed

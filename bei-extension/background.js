@@ -1818,6 +1818,23 @@ async function prepareWorkerTab(tab, target, slot, chatMode, tabMode, bringTabTo
   await ensureContentScriptInjected(tabId, target);
 }
 
+/** Asks the tab whether it is still watching this job. null = no answer (fresh page / no handler). */
+function askTabJobStatus(tabId, jobId) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 2500);
+    try {
+      chrome.tabs.sendMessage(tabId, { action: 'JOB_STATUS', data: { jobId } }, (resp) => {
+        clearTimeout(timer);
+        if (chrome.runtime.lastError) resolve(null);
+        else resolve(resp || null);
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      resolve(null);
+    }
+  });
+}
+
 async function startJobOnTab(job, tabId) {
   const { jobId, target, prompt, fullPrompt, images = [], timeoutSeconds, tabMode, bringTabToFront, quality, aspectRatio, modelQuality, accountSlot, dispatchMode, projectId, source } = job;
   if (cancelledJobIds.has(jobId)) throw new Error('Job was cancelled before it started');
@@ -1859,7 +1876,14 @@ async function startJobOnTab(job, tabId) {
     }
   });
 
-  await dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds, accountSlot, images, tabMode, bringTabToFront, aspectRatio, quality, modelQuality, chatMode);
+  const live = activeJobs.get(jobId);
+  if (live) live.dispatching = true;
+  try {
+    await dispatchPromptToTab(tabId, jobId, target, prompt, timeoutSeconds, accountSlot, images, tabMode, bringTabToFront, aspectRatio, quality, modelQuality, chatMode);
+  } finally {
+    const j = activeJobs.get(jobId);
+    if (j) j.dispatching = false;
+  }
 }
 
 /**
@@ -2460,6 +2484,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     let { jobId, image, target, metadata } = message.data;
     // Ends the job, records a good result for this tab's chat, and starts the tab's next job.
     const job = finishJob(jobId, 'success');
+    if (!job) {
+      // Second delivery for a job that already completed (or was cancelled): never forward it.
+      console.log(`[MythicFrame BEI] Ignoring duplicate GENERATION_COMPLETED for ${jobId} (${metadata?.retrievalMethod || 'unknown'}).`);
+      sendResponse({ ack: true, ignored: true });
+      return true;
+    }
+    {
+      const sizeKB = typeof image === 'string' ? Math.round(image.length / 1024) : 0;
+      const method = metadata?.retrievalMethod || 'unknown';
+      const isUrl = typeof image === 'string' && !image.startsWith('data:');
+      const small = !isUrl && sizeKB > 0 && sizeKB < 300;
+      emitAuditLog(small ? 'IMAGE_CAPTURED_SMALL' : 'IMAGE_CAPTURED',
+        `Job ${jobId} image captured on tab ${job.tabId}: ${method}, ${isUrl ? 'url' : sizeKB + ' KB'}${metadata?.width ? `, ${metadata.width}x${metadata.height}` : ''}${small ? ' (small: likely a preview, not the full-size master)' : ''}`,
+        { jobId, tabId: job.tabId, target: job.target, accountSlot: job.accountSlot, email: maskEmail(tabEmailsCache.get(job.tabId)) });
+    }
     if (job && metadata) {
       metadata.tabId = job.tabId;
       metadata.chatSessionMode = job.chatMode;
@@ -2810,10 +2849,20 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     const target = tab.url.includes("gemini.google.com") ? "gemini" : "chatgpt";
     await ensureContentScriptInjected(tabId, target);
 
-    // Reload Recovery: Check if this reloaded tab has an active job
-    for (const [jobId, job] of activeJobs.entries()) {
+    // Reload Recovery: only for a REAL reload. Gemini also fires "complete" when it changes the URL
+    // to /app/<chat id> after submission; the page's own watcher is still running then, and starting
+    // a second one returned half-rendered previews (and re-sent prompts -> duplicates).
+    for (const [jobId, job] of Array.from(activeJobs.entries())) {
       if (job.tabId === tabId) {
+        if (job.isText || job.dispatching) continue; // dispatchPromptToTab handles its own reloads
+        const status = await askTabJobStatus(tabId, jobId);
+        if (status && status.running) {
+          console.log(`[MythicFrame BEI] Tab ${tabId} URL changed but job ${jobId} is still running in the page. No recovery needed.`);
+          continue;
+        }
+        if (!activeJobs.has(jobId)) continue; // finished while we were asking
         console.log(`[MythicFrame BEI] Tab ${tabId} reloaded with active job ${jobId} (submitted: ${job.submitted}). Initiating recovery...`);
+        emitAuditLog('JOB_RECOVERY', `Tab ${tabId} reloaded during job ${jobId} (submitted: ${Boolean(job.submitted)}); recovering`, { jobId, tabId, target: job.target, accountSlot: job.accountSlot });
         if (job.submitted) {
           // Submitted case: Run DOM recovery scan without duplicate prompt
           chrome.tabs.sendMessage(tabId, {

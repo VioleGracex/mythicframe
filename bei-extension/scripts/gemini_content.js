@@ -1639,114 +1639,177 @@
     return { finalData, srcUrl };
   }
 
-  async function handleJobRecovery(jobId, prompt, chatUrl, quality = "ultra_original", aspectRatio = "1:1", modelQuality = "auto", images = []) {
-    console.log(`[MythicFrame BEI] Starting recovery scan for active job ${jobId}...`);
-    ensureBackgroundCpuAwake();
-
-    // 1. Check if an image is already rendered in the latest model response
-    const modelResponses = Array.from(document.querySelectorAll('model-response, [data-test-id*="model-response"], div.response-container'))
-      .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
-
-    if (modelResponses.length > 0) {
-      const latest = modelResponses[modelResponses.length - 1];
-      const imagesInLatest = protocol.getAllImagesRecursively(latest);
-
-      for (const img of imagesInLatest) {
-        if (protocol.isGeneratedImage(img) && img.complete && (img.naturalWidth > 120 || img.naturalHeight > 120)) {
-          console.log(`âœ… [MythicFrame BEI Recovery] Found completed generated image in latest turn for job ${jobId}!`);
-          const extracted = await extractFullResolutionAsset(img, quality);
-          let finalData = extracted.finalData;
-          const srcUrl = extracted.srcUrl || img.currentSrc || img.src;
-          const grid = protocol.detectCandidateGrid ? protocol.detectCandidateGrid(document.body) : null;
-          const candidates = grid && grid.urls && grid.urls.length > 0 ? grid.urls : undefined;
-
-          chrome.runtime.sendMessage({
-            type: 'GENERATION_COMPLETED',
-            data: {
-              jobId,
-              image: finalData || srcUrl,
-              target: 'gemini',
-              metadata: {
-                srcUrl,
-                width: img.naturalWidth || 1024,
-                height: img.naturalHeight || 1024,
-                candidates,
-                retrievalMethod: finalData ? 'recovered_base64' : 'recovered_url',
-                imageFormat: finalData ? 'base64' : 'url'
-              }
-            }
-          });
-          return;
+  /**
+   * Full-size (2K) master capture: Gemini only renders the high-res image when its native
+   * Download runs (2-step generation), and saves it via a page blob: download. The bytes are
+   * captured in-page (page_hook.js, MAIN world) and by the background worker for direct-URL
+   * setups. Returns a data URL, or '' when the master could not be captured.
+   */
+  async function captureFullSizeMaster(imgEl, jobId, quality = 'ultra_original') {
+    if (quality === 'standard' || !imgEl || typeof chrome === 'undefined' || !chrome.runtime) return '';
+    try {
+      reportProgress(jobId, 'full_size', 'Requesting Gemini full-size (2K) master via Download...');
+      const pagePromise = awaitPageFullSize(22000);
+      const bgPromise = chrome.runtime.sendMessage({ type: 'ARM_FULLSIZE_CAPTURE', data: { jobId } }).catch(() => ({ success: false, dataUrl: '' }));
+      await new Promise(r => setTimeout(r, 400));
+      const clicked = await clickDownloadForImage(imgEl, jobId);
+      if (clicked) {
+        const hb = setInterval(() => reportProgress(jobId, 'full_size', 'Rendering full-size (2K) master...'), 3000);
+        let pageRes = null, bgRes = null;
+        try { [pageRes, bgRes] = await Promise.all([pagePromise, bgPromise]); } finally { clearInterval(hb); }
+        const cap = [pageRes, bgRes].find(r => r && r.success && typeof r.dataUrl === 'string' && r.dataUrl.startsWith('data:image') && r.dataUrl.length > 700000);
+        if (cap) {
+          reportProgress(jobId, 'full_size_captured', `Full-size master captured (${Math.round(cap.dataUrl.length / 1024)} KB).`);
+          try { chrome.runtime.sendMessage({ type: 'REMOVE_FULLSIZE_DOWNLOAD', data: { jobId } }); } catch (e) {}
+          return cap.dataUrl;
         }
+      } else {
+        try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'DISARM_FULLSIZE' }, '*'); } catch (e) {}
+        try { chrome.runtime.sendMessage({ type: 'DISARM_FULLSIZE_CAPTURE', data: { jobId } }); } catch (e) {}
+        if (pagePromise && pagePromise.catch) pagePromise.catch(() => {});
+        if (bgPromise && bgPromise.catch) bgPromise.catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[MythicFrame BEI] Full-size capture notice:', e);
+    }
+    return '';
+  }
+
+  function normalizeTurnText(t) {
+    return String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * Finds the model response that answers THIS job's prompt (the turn after the last user
+   * query containing the prompt). Returns { query, response } — response may be null while
+   * Gemini has not started answering. Returns null when the prompt is not in the chat.
+   * Never falls back to an older turn's image.
+   */
+  function findTurnForPrompt(prompt) {
+    const queries = Array.from(document.querySelectorAll('user-query, .user-query, [data-test-id*="user-query"]'))
+      .filter(q => !q.parentElement || !q.parentElement.closest('user-query, .user-query'));
+    const responses = Array.from(document.querySelectorAll('model-response, [data-test-id*="model-response"], div.response-container'))
+      .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
+    const snippet = normalizeTurnText(prompt).slice(0, 48);
+    if (queries.length === 0) {
+      // Unknown layout: only trust a response if there is exactly one turn on the page.
+      return responses.length === 1 ? { query: null, response: responses[0] } : null;
+    }
+    let query = null;
+    for (let i = queries.length - 1; i >= 0; i--) {
+      if (snippet && normalizeTurnText(queries[i].textContent).includes(snippet)) { query = queries[i]; break; }
+    }
+    if (!query) return null;
+    const response = responses.find(r => query.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING) || null;
+    return { query, response };
+  }
+
+  let recoveringJobId = null;
+
+  async function handleJobRecovery(jobId, prompt, chatUrl, quality = "ultra_original", aspectRatio = "1:1", modelQuality = "auto", images = []) {
+    // The main executePrompt watcher is still alive in this page (e.g. Gemini only changed the URL
+    // to /app/<chat id> after submission). A second watcher here used to grab the half-rendered
+    // preview (mixed old/new image) and return it before the real full-size image.
+    if (activeRunningJobId === jobId || recoveringJobId === jobId) {
+      console.log(`[MythicFrame BEI] Job ${jobId} is already being watched in this page. Recovery skipped.`);
+      return;
+    }
+    console.log(`[MythicFrame BEI] Starting recovery for job ${jobId} after tab reload...`);
+    recoveringJobId = jobId;
+    activeRunningJobId = jobId;
+    ensureBackgroundCpuAwake();
+    reportProgress(jobId, 'recovering', 'Tab reloaded: waiting for this job\'s result in the chat...');
+
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 600000;
+    let lastSrc = null;
+    let stablePolls = 0;
+    let sawTurn = false;
+    let finishedNoImageSince = 0;
+
+    const stop = () => {
+      if (recoveringJobId === jobId) recoveringJobId = null;
+      if (activeRunningJobId === jobId) activeRunningJobId = null;
+    };
+    const fail = (error) => {
+      stop();
+      try { chrome.runtime.sendMessage({ type: 'GENERATION_FAILED', data: { jobId, error } }); } catch (e) {}
+    };
+
+    while (true) {
+      await new Promise(r => setTimeout(r, 1500));
+      if (recoveringJobId !== jobId) return; // cancelled or replaced
+      if (Date.now() - startedAt > TIMEOUT_MS) return fail('Recovery timed out waiting for the generated image after tab reload.');
+
+      const turn = findTurnForPrompt(prompt);
+      if (!turn) {
+        // The prompt was already submitted but is not in this chat (reload landed elsewhere).
+        // Fail instead of re-sending: a re-send would create a duplicate generation.
+        if (!sawTurn && Date.now() - startedAt > 45000) {
+          return fail('Prompt not found in the chat after tab reload; not re-sending to avoid a duplicate.');
+        }
+        continue;
+      }
+      sawTurn = true;
+      const response = turn.response;
+      if (!response || isModelResponseGenerating(response) || getStopButton()) {
+        lastSrc = null; stablePolls = 0; finishedNoImageSince = 0;
+        continue;
       }
 
-      // Check if response has image collection / retrieval URLs
-      const respUrls = protocol.extractImageUrlsFromNode(latest);
-      if (respUrls.length > 0) {
-        const u = respUrls[respUrls.length - 1];
-        console.log(`âœ… [MythicFrame BEI Recovery] Found image retrieval URL in latest turn for job ${jobId}: ${u}`);
-        const base64 = await protocol.fetchBlobAsBase64(u, quality);
+      const imgs = protocol.getAllImagesRecursively(response)
+        .filter(img => protocol.isGeneratedImage(img) && img.complete && (img.naturalWidth > 120 || img.naturalHeight > 120));
+      const img = imgs[imgs.length - 1];
+      if (!img) {
+        if (!finishedNoImageSince) finishedNoImageSince = Date.now();
+        if (Date.now() - finishedNoImageSince > 30000) {
+          const text = (response.innerText || '').trim().slice(0, 200);
+          return fail(`Gemini finished without an image${text ? `: ${text}` : ''}`);
+        }
+        continue;
+      }
+      finishedNoImageSince = 0;
+
+      // Require the same final image on two consecutive polls (no mid-render frames).
+      const src = img.currentSrc || img.src || '';
+      if (src && src === lastSrc) stablePolls++; else { lastSrc = src; stablePolls = 0; }
+      if (stablePolls < 1) continue;
+
+      reportProgress(jobId, 'capturing_image', 'Recovered finished image after reload. Extracting full-size asset...');
+      let finalData = await captureFullSizeMaster(img, jobId, quality);
+      let retrievalMethod = 'recovered_fullsize';
+      let srcUrl = src;
+      if (!finalData) {
+        const extracted = await extractFullResolutionAsset(img, quality);
+        finalData = extracted.finalData;
+        srcUrl = extracted.srcUrl || src;
+        retrievalMethod = 'recovered_preview';
+      }
+      if (recoveringJobId !== jobId) return;
+      stop();
+      const isBase64 = typeof finalData === 'string' && finalData.startsWith('data:image');
+      try {
         chrome.runtime.sendMessage({
           type: 'GENERATION_COMPLETED',
           data: {
             jobId,
-            image: base64 || u,
+            image: finalData || srcUrl,
             target: 'gemini',
             metadata: {
-              srcUrl: u,
-              retrievalMethod: 'recovered_url'
+              srcUrl,
+              width: img.naturalWidth || 1024,
+              height: img.naturalHeight || 1024,
+              retrievalMethod,
+              imageFormat: isBase64 ? 'base64' : 'url',
+              imageSize: (finalData || '').length,
+              chatName: extractActiveChatName(),
+              chatUrl: window.location.href
             }
           }
         });
-        return;
-      }
-
-      // If latest response is still generating, passively wait for completion without disrupting generation!
-      if (isModelResponseGenerating(latest) || getStopButton()) {
-        console.log(`[MythicFrame BEI Recovery] Model response is actively generating. Attaching passive observer (no stop, no resend)...`);
-        reportProgress(jobId, 'generating', 'Reconnected to in-progress Gemini generation. Observing...');
-        const pollStart = Date.now();
-        const pollInterval = setInterval(async () => {
-          if (Date.now() - pollStart > 600000) {
-            clearInterval(pollInterval);
-            return;
-          }
-          const currentLatest = document.querySelector('model-response:last-of-type, [data-test-id*="model-response"]:last-of-type, div.response-container:last-of-type');
-          if (!currentLatest) return;
-          const imgs = protocol.getAllImagesRecursively(currentLatest);
-          for (const img of imgs) {
-            if (protocol.isGeneratedImage(img) && img.complete && (img.naturalWidth > 120 || img.naturalHeight > 120)) {
-              clearInterval(pollInterval);
-              console.log(`[MythicFrame BEI Recovery] Harvested generated image for job ${jobId}!`);
-              const extracted = await extractFullResolutionAsset(img, quality);
-              const srcUrl = extracted.srcUrl || img.currentSrc || img.src;
-              chrome.runtime.sendMessage({
-                type: 'GENERATION_COMPLETED',
-                data: {
-                  jobId,
-                  image: extracted.finalData || srcUrl,
-                  target: 'gemini',
-                  metadata: {
-                    srcUrl,
-                    width: img.naturalWidth || 1024,
-                    height: img.naturalHeight || 1024,
-                    chatName: extractActiveChatName(),
-                    retrievalMethod: 'recovered_passive_harvest',
-                    chatUrl: window.location.href
-                  }
-                }
-              });
-              return;
-            }
-          }
-        }, 1500);
-        return;
-      }
+      } catch (e) {}
+      return;
     }
-
-    // Only if absolutely no model turn exists and prompt was not submitted
-    console.log(`[MythicFrame BEI Recovery] No model response detected. Re-dispatching prompt...`);
-    return executePrompt(jobId, prompt, 150, images, quality, aspectRatio, modelQuality);
   }
 
   async function executePrompt(jobId, prompt, timeoutSeconds = 150, images = [], quality = "ultra_original", aspectRatio = "1:1", modelQuality = "auto", retryCount = 0, chatSessionMode = "same_chat") {
@@ -2009,36 +2072,9 @@
       let finalData = '';
       let srcUrl = (typeof imgOrUrl === 'string') ? imgOrUrl : (imgOrUrl.currentSrc || imgOrUrl.src || '');
 
-      // Full-size (2K) master capture: Gemini only renders the high-res image when its
-      // native Download runs (2-step generation), and saves it via a page blob: download.
-      // Capture the bytes in-page (page_hook.js, MAIN world); also arm the background
-      // worker for direct-URL setups. Fall back to the on-page preview below.
-      if (quality !== 'standard' && typeof imgOrUrl !== 'string' && typeof chrome !== 'undefined' && chrome.runtime) {
-        try {
-          reportProgress(jobId, 'full_size', 'Requesting Gemini full-size (2K) master via Download...');
-          const pagePromise = awaitPageFullSize(22000);
-          const bgPromise = chrome.runtime.sendMessage({ type: 'ARM_FULLSIZE_CAPTURE', data: { jobId } }).catch(() => ({ success: false, dataUrl: '' }));
-          await new Promise(r => setTimeout(r, 400));
-          const clicked = await clickDownloadForImage(imgOrUrl, jobId);
-          if (clicked) {
-            const hb = setInterval(() => reportProgress(jobId, 'full_size', 'Rendering full-size (2K) master...'), 3000);
-            let pageRes = null, bgRes = null;
-            try { [pageRes, bgRes] = await Promise.all([pagePromise, bgPromise]); } finally { clearInterval(hb); }
-            const cap = [pageRes, bgRes].find(r => r && r.success && typeof r.dataUrl === 'string' && r.dataUrl.startsWith('data:image') && r.dataUrl.length > 700000);
-            if (cap) {
-              finalData = cap.dataUrl;
-              reportProgress(jobId, 'full_size_captured', `Full-size master captured (${Math.round(finalData.length / 1024)} KB).`);
-              try { chrome.runtime.sendMessage({ type: 'REMOVE_FULLSIZE_DOWNLOAD', data: { jobId } }); } catch (e) {}
-            }
-          } else {
-            try { window.postMessage({ source: 'MYTHIC_BEI_CONTENT', type: 'DISARM_FULLSIZE' }, '*'); } catch (e) {}
-            try { chrome.runtime.sendMessage({ type: 'DISARM_FULLSIZE_CAPTURE', data: { jobId } }); } catch (e) {}
-            if (pagePromise && pagePromise.catch) pagePromise.catch(() => {});
-            if (bgPromise && bgPromise.catch) bgPromise.catch(() => {});
-          }
-        } catch (e) {
-          console.warn('[MythicFrame BEI] Full-size capture notice:', e);
-        }
+      // Full-size (2K) master capture via Gemini's native Download (see captureFullSizeMaster).
+      if (typeof imgOrUrl !== 'string') {
+        finalData = await captureFullSizeMaster(imgOrUrl, jobId, quality);
       }
 
       if (!finalData) {
@@ -2802,6 +2838,12 @@
       const { jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality, chatSessionMode } = request.data || {};
       executePrompt(jobId, prompt, timeoutSeconds, images, quality || 'ultra_original', aspectRatio || '1:1', modelQuality || 'auto', 0, chatSessionMode || 'same_chat');
       sendResponse({ success: true, started: true });
+      return true;
+    }
+
+    if (request.action === 'JOB_STATUS') {
+      const { jobId } = request.data || {};
+      sendResponse({ success: true, running: Boolean(jobId) && activeRunningJobId === jobId, activeJobId: activeRunningJobId });
       return true;
     }
 
