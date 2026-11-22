@@ -476,12 +476,16 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
   } = options;
 
   let projectId = options.projectId;
-  if (!projectId) {
-    try {
-      const cfgPath = path.join(resolveProjectRoot(), 'mythic_project.json');
-      if (fs.existsSync(cfgPath)) projectId = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))?.projectName;
-    } catch {}
-  }
+  let proEmails: string[] | undefined;
+  try {
+    const cfgPath = path.join(resolveProjectRoot(), 'mythic_project.json');
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      if (!projectId) projectId = cfg?.projectName;
+      // Manual Pro override: "proEmails": ["you@gmail.com"] — these accounts are always treated as Pro.
+      if (Array.isArray(cfg?.proEmails)) proEmails = cfg.proEmails.filter((e: any) => typeof e === 'string');
+    }
+  } catch {}
 
   // Process reference images (convert local file paths to base64 data URIs if necessary)
   const processedImages: string[] = [];
@@ -511,7 +515,8 @@ export async function generateWithBEI(options: BEIGenerateOptions): Promise<BEIG
     dispatchMode,
     chatSessionMode,
     projectId: projectId || 'default',
-    source: 'mcp'
+    source: 'mcp',
+    proEmails
   };
 
   let result: any = null;

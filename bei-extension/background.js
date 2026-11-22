@@ -63,6 +63,132 @@ function isSlotExhausted(target, slot) {
   return true;
 }
 
+// ─── ACCOUNT TIERS ───────────────────────────────────────────────────────────
+// tier: 'pro' (Google AI Pro/Ultra), 'free', or 'unknown'. Manual overrides (proEmails in
+// mythic_project.json, or the Pro/Free toggle in Settings) always win over page detection.
+const accountTierOverrides = new Map(); // email (lowercase) -> 'pro' | 'free'
+let lastAccountPriorityOrder = [];      // gemini slots in the user's Settings priority order
+
+function normalizeTier(t) {
+  const v = String(t || '').toLowerCase();
+  if (v === 'pro' || v === 'advanced' || v === 'ultra') return 'pro';
+  if (v === 'free' || v === 'standard') return 'free';
+  return 'unknown';
+}
+
+function getAccountTier(acc) {
+  if (!acc) return 'unknown';
+  const email = (acc.email || '').toLowerCase();
+  if (email && accountTierOverrides.has(email)) return accountTierOverrides.get(email);
+  return normalizeTier(acc.tier);
+}
+
+/** Merge account info for a slot without wiping a known tier (the old code overwrote it on every email report). */
+function upsertAccount(slot, info) {
+  const parsed = (typeof slot === 'number') ? slot : (parseInt(slot, 10) || 0);
+  const prev = knownGoogleAccounts.get(parsed);
+  const sameAccount = prev && info.email && prev.email && prev.email.toLowerCase() === String(info.email).toLowerCase();
+  const merged = { ...(sameAccount || !info.email ? prev : {}), ...info, slot: parsed };
+  const incoming = normalizeTier(info.tier);
+  if (incoming === 'unknown') {
+    merged.tier = sameAccount ? normalizeTier(prev.tier) : 'unknown';
+    if (sameAccount && prev.capabilities) merged.capabilities = prev.capabilities;
+  } else {
+    merged.tier = incoming;
+  }
+  const changed = !prev || prev.email !== merged.email || normalizeTier(prev.tier) !== merged.tier;
+  knownGoogleAccounts.set(parsed, merged);
+  if (changed) persistKnownAccounts();
+  return merged;
+}
+
+function persistTierOverrides() {
+  if (chrome.storage && chrome.storage.local) {
+    try { chrome.storage.local.set({ mythicTierOverrides: Array.from(accountTierOverrides.entries()) }); } catch (e) {}
+  }
+}
+
+function restoreTierOverrides() {
+  if (chrome.storage && chrome.storage.local) {
+    try {
+      chrome.storage.local.get(['mythicTierOverrides'], (res) => {
+        if (res && Array.isArray(res.mythicTierOverrides)) {
+          for (const [email, tier] of res.mythicTierOverrides) {
+            if (!accountTierOverrides.has(email)) accountTierOverrides.set(email, tier);
+          }
+        }
+      });
+    } catch (e) {}
+  }
+}
+restoreTierOverrides();
+
+/** Applies overrides sent with a job: proEmails[] and tierOverrides { email: 'pro' | 'free' | 'auto' }. */
+function applyTierOverrides(proEmails, tierOverrides) {
+  let changed = false;
+  if (Array.isArray(proEmails)) {
+    for (const e of proEmails) {
+      const email = String(e || '').trim().toLowerCase();
+      if (email && accountTierOverrides.get(email) !== 'pro') { accountTierOverrides.set(email, 'pro'); changed = true; }
+    }
+  }
+  if (tierOverrides && typeof tierOverrides === 'object') {
+    for (const [e, t] of Object.entries(tierOverrides)) {
+      const email = String(e || '').trim().toLowerCase();
+      if (!email) continue;
+      const tier = String(t || '').toLowerCase();
+      if (tier === 'pro' || tier === 'free') {
+        if (accountTierOverrides.get(email) !== tier) { accountTierOverrides.set(email, tier); changed = true; }
+      } else if (accountTierOverrides.has(email) && !(Array.isArray(proEmails) && proEmails.map(x => String(x).toLowerCase()).includes(email))) {
+        accountTierOverrides.delete(email); changed = true;
+      }
+    }
+  }
+  if (changed) persistTierOverrides();
+}
+
+/**
+ * Pro-first account choice for Gemini. Order:
+ *   1. idle Pro account   2. busy Pro account (queues on its own tab)
+ *   3. idle unknown-tier  4. idle Free   5. busy unknown / Free
+ * Exhausted (quota) slots are skipped. Ties follow the Settings priority order, then the hinted slot.
+ * Returns { slot, reason } or null when no account is known.
+ */
+function chooseGeminiAccount(hintSlot, dispatchMode) {
+  const accounts = Array.from(knownGoogleAccounts.values()).filter(a => a && typeof a.slot === 'number' && a.email);
+  if (accounts.length === 0) return null;
+  const order = lastAccountPriorityOrder.length ? lastAccountPriorityOrder : [];
+  const prio = (slot) => {
+    const i = order.indexOf(slot);
+    return i === -1 ? 100 + slot : i;
+  };
+  const tierRank = { pro: 0, unknown: 1, free: 2 };
+  const healthy = accounts.filter(a => !isSlotExhausted('gemini', a.slot));
+  if (healthy.length === 0) return null;
+  const scored = healthy.map(a => {
+    const tier = getAccountTier(a);
+    const busy = isSlotBusy('gemini', a.slot);
+    // Pro: busy Pro still beats idle Free (queue on Pro). Others: idle first.
+    const bucket = tier === 'pro' ? (busy ? 1 : 0) : (busy ? 4 : (tier === 'unknown' ? 2 : 3));
+    return { a, tier, busy, bucket };
+  });
+  // Batch ("multi") mode spreads work: any idle account beats a busy Pro.
+  if (dispatchMode === 'multi') {
+    for (const x of scored) if (x.tier === 'pro' && x.busy) x.bucket = 3.5;
+  }
+  scored.sort((x, y) =>
+    (x.bucket - y.bucket) ||
+    (tierRank[x.tier] - tierRank[y.tier]) ||
+    (prio(x.a.slot) - prio(y.a.slot)) ||
+    ((x.a.slot === hintSlot ? 0 : 1) - (y.a.slot === hintSlot ? 0 : 1)) ||
+    (x.a.slot - y.a.slot)
+  );
+  const best = scored[0];
+  const label = best.tier === 'pro' ? (best.busy ? 'Pro account (busy, queued on its tab)' : 'idle Pro account')
+    : best.tier === 'unknown' ? 'no Pro available; account tier unknown' : 'no Pro available; Free fallback';
+  return { slot: best.a.slot, tier: best.tier, reason: label, summary: scored.map(x => `${x.a.slot}:${x.tier}${x.busy ? '(busy)' : ''}`).join(', ') };
+}
+
 function lockTab(tabId) {
   if (tabId) busyTabs.add(tabId);
 }
@@ -286,7 +412,7 @@ async function scanGoogleAccounts() {
       if (existingTab && existingTab.id) {
         const em = await extractTabEmail(existingTab.id, "gemini", slot);
         if (em && !isSystemEmail(em)) {
-          knownGoogleAccounts.set(slot, { slot, email: em, name: em });
+          upsertAccount(slot, { slot, email: em, name: em });
         }
         continue;
       }
@@ -302,7 +428,7 @@ async function scanGoogleAccounts() {
         await waitForTabReady(probeTab.id, 7000);
         const em = await extractTabEmail(probeTab.id, "gemini", slot);
         if (em && !isSystemEmail(em)) {
-          knownGoogleAccounts.set(slot, { slot, email: em, name: em });
+          upsertAccount(slot, { slot, email: em, name: em });
           console.log(`[MythicFrame BEI] Discovered Google account for slot ${slot}: ${em}`);
         }
         // Remove temporary probe tab
@@ -363,7 +489,7 @@ async function refreshGoogleAccountsList() {
             name = acc.name || acc.display_name || "";
           }
           if (email && !isSystemEmail(email)) {
-            knownGoogleAccounts.set(idx, { slot: idx, email, name });
+            upsertAccount(idx, { slot: idx, email, name });
           }
         });
         persistKnownAccounts();
@@ -570,7 +696,7 @@ async function extractTabEmail(tabId, target, accountSlot = 0) {
     if (resp && resp.email && !isSystemEmail(resp.email)) {
       tabEmailsCache.set(tabId, resp.email);
       if (target === "gemini") {
-        knownGoogleAccounts.set(accountSlot, { slot: accountSlot, email: resp.email, name: resp.email });
+        upsertAccount(accountSlot, { slot: accountSlot, email: resp.email, name: resp.email, tier: resp.tier });
       }
       return resp.email;
     }
@@ -650,13 +776,11 @@ async function extractTabEmail(tabId, target, accountSlot = 0) {
                     if (typeof window.__MYTHIC_BEI_GET_TIER__ === 'function') {
                       return window.__MYTHIC_BEI_GET_TIER__();
                     }
-                    const advBadge = document.querySelector('.bard-advanced-logo, [aria-label*="Gemini Advanced" i], [data-test-id*="advanced"]');
-                    const isAdv = !!advBadge;
-                    return { tier: isAdv ? 'advanced' : 'free', capabilities: { image: true, video: isAdv, music: true, text: true } };
+                    return { tier: 'unknown', capabilities: { image: true, video: false, music: true, text: true } };
                   }
                 }).then(tierRes => {
-                  const tData = tierRes?.[0]?.result || { tier: 'free', capabilities: { image: true, video: false, music: true, text: true } };
-                  knownGoogleAccounts.set(accountSlot, {
+                  const tData = tierRes?.[0]?.result || { tier: 'unknown', capabilities: { image: true, video: false, music: true, text: true } };
+                  upsertAccount(accountSlot, {
                     slot: accountSlot,
                     email: emailFound,
                     name: emailFound,
@@ -665,20 +789,20 @@ async function extractTabEmail(tabId, target, accountSlot = 0) {
                   });
                   persistKnownAccounts();
                 }).catch(() => {
-                  knownGoogleAccounts.set(accountSlot, {
+                  upsertAccount(accountSlot, {
                     slot: accountSlot,
                     email: emailFound,
                     name: emailFound,
-                    tier: 'free',
+                    tier: 'unknown',
                     capabilities: { image: true, video: false, music: true, text: true }
                   });
                 });
               } catch (e) {
-                knownGoogleAccounts.set(accountSlot, {
+                upsertAccount(accountSlot, {
                   slot: accountSlot,
                   email: emailFound,
                   name: emailFound,
-                  tier: 'free',
+                  tier: 'unknown',
                   capabilities: { image: true, video: false, music: true, text: true }
                 });
               }
@@ -715,7 +839,7 @@ async function discoverTabs() {
         const slot = slotMatch ? parseInt(slotMatch[1], 10) : 0;
         const email = await extractTabEmail(tab.id, "gemini", slot);
         if (email && !isSystemEmail(email)) {
-          knownGoogleAccounts.set(slot, { slot, email, name: email });
+          upsertAccount(slot, { slot, email, name: email });
         }
         const chatInfo = tabChatHistory.get(tab.id);
         const rawTitle = (tab.title || '').replace(/^Gemini\s*[-–—|•]\s*/i, '').replace(/\s*[-–—|•]\s*Gemini$/i, '').trim();
@@ -726,7 +850,7 @@ async function discoverTabs() {
           target: "gemini",
           accountSlot: slot,
           email: email || (knownGoogleAccounts.get(slot)?.email) || undefined,
-          tier: knownGoogleAccounts.get(slot)?.tier || 'free',
+          tier: getAccountTier(knownGoogleAccounts.get(slot)),
           chatName,
           title: tab.title || "Gemini Web",
           active: tab.active
@@ -1968,52 +2092,46 @@ async function handleBridgeCommand(msg) {
     const { jobId, target = "gemini", prompt, projectId = 'default', source = 'unknown', fullPrompt, aspectRatio, modelQuality, timeoutSeconds, images = [], tabMode = 'same_window_group', bringTabToFront = false, chatSessionMode = 'same_chat', tabSessionId = null, quality = 'ultra_original', dispatchMode = 'single', preferredEmail, email } = data;
     let parsedSlot = (typeof data.accountSlot === 'number') ? data.accountSlot : undefined;
 
-    // Account Priority System:
-    // Priority 1: User explicitly requested a specific email address
+    applyTierOverrides(data.proEmails, data.tierOverrides);
+    if (Array.isArray(data.priorityOrder)) {
+      lastAccountPriorityOrder = data.priorityOrder.map(n => parseInt(n, 10)).filter(n => !isNaN(n));
+    }
+
+    // Account selection:
+    //   1. An explicitly named account (preferredEmail) is always honored.
+    //   2. Gemini: Pro accounts first (idle, then busy/queued), then unknown/Free in Settings priority order.
+    //      The slot sent by the caller is only a tie-break hint.
+    let routeReason = '';
     const targetEmail = (preferredEmail || email || '').trim().toLowerCase();
+    let pinnedByEmail = false;
     if (targetEmail) {
       for (const [s, acc] of knownGoogleAccounts.entries()) {
         if (acc && acc.email && acc.email.toLowerCase() === targetEmail) {
           parsedSlot = s;
-          console.log(`[MythicFrame BEI Worker] Account Priority 1: Prioritizing requested email ${acc.email} on slot ${s}`);
+          pinnedByEmail = true;
+          routeReason = `requested account ${maskEmail(acc.email)}`;
           break;
         }
       }
-    } else if (parsedSlot === undefined && target === 'gemini') {
-      // Priority 2: Automatically prioritize Pro / Gemini Advanced subscription accounts that are NOT exhausted and NOT busy!
-      const proSlot = Array.from(knownGoogleAccounts.values()).find(acc => acc && (acc.tier === 'advanced' || acc.tier === 'pro') && !isSlotExhausted(target, acc.slot) && !isSlotBusy(target, acc.slot));
-      if (proSlot) {
-        parsedSlot = proSlot.slot;
-        console.log(`[MythicFrame BEI Worker] Account Priority 2: Auto-prioritized Gemini Advanced subscription on slot ${proSlot.slot} (${proSlot.email})`);
-      } else {
-        // Find any non-exhausted Pro slot even if currently busy (it will queue)
-        const busyProSlot = Array.from(knownGoogleAccounts.values()).find(acc => acc && (acc.tier === 'advanced' || acc.tier === 'pro') && !isSlotExhausted(target, acc.slot));
-        if (busyProSlot) {
-          parsedSlot = busyProSlot.slot;
-          console.log(`[MythicFrame BEI Worker] Account Priority 2b: Routing to Gemini Advanced slot ${busyProSlot.slot} (${busyProSlot.email})`);
-        } else {
-          // Fallback to any non-exhausted account slot
-          const nonExhausted = Array.from(knownGoogleAccounts.values()).find(acc => !isSlotExhausted(target, acc.slot) && !isSlotBusy(target, acc.slot));
-          if (nonExhausted) {
-            parsedSlot = nonExhausted.slot;
-          } else {
-            parsedSlot = 0;
-          }
-        }
-      }
-    } else if (parsedSlot !== undefined && isSlotExhausted(target, parsedSlot)) {
-      // Slot was manually provided, but is marked exhausted! Failover to a healthy subscribed account
-      const healthyProSlot = Array.from(knownGoogleAccounts.values()).find(acc => acc && (acc.tier === 'advanced' || acc.tier === 'pro') && !isSlotExhausted(target, acc.slot));
-      if (healthyProSlot) {
-        console.warn(`[MythicFrame BEI Worker] Requested slot ${parsedSlot} is quota exhausted. Auto-failing over to active subscribed slot ${healthyProSlot.slot} (${healthyProSlot.email})`);
-        parsedSlot = healthyProSlot.slot;
+    }
+    if (!pinnedByEmail && target === 'gemini') {
+      const choice = chooseGeminiAccount(parsedSlot, dispatchMode);
+      if (choice) {
+        parsedSlot = choice.slot;
+        routeReason = `${choice.reason} [accounts: ${choice.summary}]`;
       }
     }
-
     if (parsedSlot === undefined) parsedSlot = 0;
+    if (target === 'gemini') {
+      const chosen = knownGoogleAccounts.get(parsedSlot);
+      emitAuditLog('ACCOUNT_SELECTED', `Job ${jobId} -> slot ${parsedSlot} (${getAccountTier(chosen)}): ${routeReason || 'default slot'}`, {
+        jobId, target, accountSlot: parsedSlot, email: maskEmail(chosen?.email), isBatch: dispatchMode === 'multi'
+      });
+    }
 
     // Multi-Account Mode: Route to an idle account slot when multi mode is active and current slot is busy
-    if (dispatchMode === 'multi' && isSlotBusy(target, parsedSlot)) {
+    // (Gemini already picked an idle account above when one exists; never move off an explicitly requested email.)
+    if (dispatchMode === 'multi' && !pinnedByEmail && target !== 'gemini' && isSlotBusy(target, parsedSlot)) {
       console.log(`[MythicFrame BEI Worker] Multi-Account Mode: Slot ${target}:${parsedSlot} is busy. Finding idle account slot...`);
       const knownSlots = Array.from(knownGoogleAccounts.keys());
       const candidateSlots = knownSlots.length > 0 ? knownSlots : [0, 1, 2, 3];
@@ -2457,12 +2575,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "TAB_INFO_PROACTIVE" || message.type === "TAB_EMAIL_DETECTED") {
-    const { target, email, accountSlot } = message.data || {};
+    const { target, email, accountSlot, tier, capabilities } = message.data || {};
     if (sender?.tab?.id && email && !isSystemEmail(email)) {
       tabEmailsCache.set(sender.tab.id, email);
       if (target === "gemini") {
         const slot = accountSlot !== undefined ? accountSlot : 0;
-        knownGoogleAccounts.set(slot, { slot, email, name: email });
+        upsertAccount(slot, capabilities ? { slot, email, name: email, tier, capabilities } : { slot, email, name: email, tier });
         console.log(`[MythicFrame BEI] Registered active email for slot ${slot}: ${email}`);
         if (ws && ws.readyState === WebSocket.OPEN) {
           discoverTabs().then(tabs => {

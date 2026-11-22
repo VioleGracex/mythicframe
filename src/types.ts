@@ -64,6 +64,8 @@ export interface BEIConfig {
   accountDispatchMode?: 'single' | 'multi';
   askAccountDispatchPreference?: 'always' | 'once';
   preferredBrowser?: 'auto' | 'chrome' | 'brave' | 'edge';
+  /** Manual account tier per email. 'auto' (or missing) = use detection from the Gemini page. */
+  tierOverrides?: Record<string, 'pro' | 'free' | 'auto'>;
 }
 
 export interface AIConfig {

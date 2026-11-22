@@ -174,6 +174,8 @@ export interface BEITabDetail {
   title?: string;
   status?: string;
   active?: boolean;
+  /** Detected (or overridden) Gemini plan: 'pro' | 'free' | 'unknown'. */
+  tier?: string;
 }
 
 export interface BEIJobContext {
@@ -574,6 +576,9 @@ export const generateWithBEI = async (
       clientJobId,
       source: 'web-ui',
       projectId: getBEIProjectKey(params),
+      // Pro-first routing: the extension prefers Pro accounts; these refine its choice.
+      tierOverrides: config.tierOverrides || {},
+      priorityOrder: prioritySlots,
       target: config.target,
       prompt: assembled.imagePromptDirective,
       fullPrompt: assembled.fullPrompt,

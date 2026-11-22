@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.10] — 2026-11-22 *(BEI Extension v1.6.1)*
+
+### Fixed
+- **Pro accounts were never preferred**:
+  - Tier detection looked for the retired "Gemini Advanced" label, so every account was treated as free. It now reads the current Gemini UI: a "PRO"/"ULTRA" badge means `pro`, a visible "Upgrade" button means `free`, and neither means `unknown`. It re-checks after the page hydrates.
+  - Every email report overwrote the account entry and wiped its tier. Account updates now merge and keep the known tier (reset only if a different account appears on that slot).
+  - The Pro check only ran when no slot was given, and the web app always sends one. The caller's slot is now only a tie-break hint.
+
+### Changed
+- **Pro-first routing (Gemini)**: idle Pro account, then busy Pro (queues on its own tab), then unknown, then Free. Quota-exhausted slots are skipped, ties follow the Settings priority order, and an explicit `preferredEmail` is always honored. Batch (`multi`) mode lets idle accounts beat a busy Pro. Each choice is logged as `ACCOUNT_SELECTED` with every account's tier.
+- **Manual override**: `"proEmails": ["you@gmail.com"]` in `mythic_project.json` (MCP), and a Pro/Free/Auto tier button on each Gemini account row in Settings (web app). Overrides beat detection and persist in the extension.
+
+---
+
 ## [1.6.9] — 2026-11-22 *(BEI Extension v1.6.0)*
 
 ### Fixed

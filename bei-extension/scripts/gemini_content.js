@@ -67,28 +67,53 @@
     window.addEventListener('keydown', onUserInteraction, { capture: true, passive: true, once: true });
   } catch (e) {}
 
+  // Tier detection for the CURRENT Gemini UI (the old "Gemini Advanced" label no longer exists):
+  //   - Paid plans show a "PRO" / "ULTRA" badge (or "Google AI Pro/Ultra" text) in the top bar.
+  //   - Free accounts show an "Upgrade" button in the top bar.
+  //   - Neither visible (page still hydrating, layout changed) -> 'unknown'.
   function extractAccountTierAndCapabilities() {
+    const result = (tier) => ({
+      tier,
+      capabilities: { image: true, video: tier === 'pro', music: true, text: true }
+    });
     try {
-      const advBadge = document.querySelector('.bard-advanced-logo, [aria-label*="Gemini Advanced" i], [data-test-id*="advanced"], a[href*="advanced"]');
-      const headerText = (document.querySelector('header, .header, nav, [role="banner"]')?.innerText || '').toLowerCase();
-      const isAdvanced = !!advBadge || headerText.includes('gemini advanced') || headerText.includes('advanced');
-      const upgradeBtn = document.querySelector('a[href*="advanced"][aria-label*="upgrade" i], button[aria-label*="upgrade" i], [data-test-id*="upgrade"], a[href*="subscriptions"]');
-      const hasUpgrade = !!upgradeBtn;
-      const tier = isAdvanced ? 'advanced' : 'free';
-      return {
-        tier,
-        capabilities: {
-          image: true,
-          video: isAdvanced,
-          music: true,
-          text: true
-        }
+      const isVisible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
       };
+      const inTopBar = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.top >= 0 && r.top < 110;
+      };
+      const textOf = (el) => (el.innerText || el.textContent || '').trim();
+
+      // 1. Paid badge in the top bar / next to the Gemini logo.
+      const badgeCandidates = document.querySelectorAll('span, div, a, button, [class*="badge" i], [class*="pill" i]');
+      for (const el of badgeCandidates) {
+        if (el.children.length > 2) continue;
+        const t = textOf(el);
+        if (!t || t.length > 24) continue;
+        if (/^(pro|ultra)$/i.test(t) || /^google ai (pro|ultra)$/i.test(t) || /^gemini (advanced|pro|ultra)$/i.test(t)) {
+          if (isVisible(el) && inTopBar(el)) return result('pro');
+        }
+      }
+      const proLabel = document.querySelector('[aria-label*="Google AI Pro" i], [aria-label*="Google AI Ultra" i], [aria-label*="Gemini Advanced" i], .bard-advanced-logo');
+      if (proLabel && isVisible(proLabel)) return result('pro');
+
+      // 2. Free plan: visible "Upgrade" button in the top bar.
+      const upgradeCandidates = document.querySelectorAll('button, a, [role="button"]');
+      for (const el of upgradeCandidates) {
+        const t = textOf(el);
+        const aria = (el.getAttribute('aria-label') || '').trim();
+        if ((/^upgrade$/i.test(t) || /^upgrade/i.test(aria) || /upgrade to google ai/i.test(aria)) && isVisible(el) && inTopBar(el)) {
+          return result('free');
+        }
+      }
+      return result('unknown');
     } catch (e) {
-      return { tier: 'free', capabilities: { image: true, video: false, music: true, text: true } };
+      return result('unknown');
     }
   }
-
   window.__MYTHIC_BEI_GET_TIER__ = extractAccountTierAndCapabilities;
 
   function extractActiveChatName() {
@@ -2931,12 +2956,15 @@
       const email = extractGoogleAccountEmail();
       const slot = protocol.extractGeminiAccountSlot(window.location.href);
       if (email && !isSystemEmail(email) && chrome.runtime && chrome.runtime.sendMessage) {
+        const tierInfo = extractAccountTierAndCapabilities();
         chrome.runtime.sendMessage({
           type: 'TAB_INFO_PROACTIVE',
           data: {
             target: 'gemini',
             email,
             accountSlot: slot,
+            tier: tierInfo.tier,
+            capabilities: tierInfo.capabilities,
             url: window.location.href
           }
         }, () => {});
@@ -2948,4 +2976,5 @@
   setTimeout(announceTabEmail, 500);
   setTimeout(announceTabEmail, 2000);
   setTimeout(announceTabEmail, 5000);
+  setTimeout(announceTabEmail, 12000); // late re-check: the Upgrade button / PRO badge hydrate late
 })();

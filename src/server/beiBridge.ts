@@ -1291,6 +1291,10 @@ export class BEIBridgeServer {
             tabSessionId,
             projectId,
             source,
+            // Pro-first routing inputs: manual Pro list, per-account tier overrides, Settings priority order
+            proEmails: Array.isArray(payload.proEmails) ? payload.proEmails.slice(0, 50) : undefined,
+            tierOverrides: payload.tierOverrides && typeof payload.tierOverrides === 'object' ? payload.tierOverrides : undefined,
+            priorityOrder: Array.isArray(payload.priorityOrder) ? payload.priorityOrder.slice(0, 20) : undefined,
             quality: payload.quality || 'ultra_original',
             dispatchMode: payload.dispatchMode || 'single'
           }

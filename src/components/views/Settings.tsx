@@ -385,6 +385,20 @@ const Settings: React.FC<SettingsProps> = ({
     setTimeout(() => setBeiFeedback(null), 3000);
   };
 
+  // Manual Pro/Free override per account email (cycles Auto -> Pro -> Free). Pro accounts are used first.
+  const handleCycleAccountTier = (tab: BEITabDetail) => {
+    const email = (tab.email || '').trim().toLowerCase();
+    if (!email) {
+      setBeiFeedback('Account email not detected yet; reopen the tab and try again.');
+      setTimeout(() => setBeiFeedback(null), 3000);
+      return;
+    }
+    const current = beiConfigState.tierOverrides?.[email] || 'auto';
+    const nextTier: 'auto' | 'pro' | 'free' = current === 'auto' ? 'pro' : current === 'pro' ? 'free' : 'auto';
+    const overrides = { ...(beiConfigState.tierOverrides || {}), [email]: nextTier };
+    handleUpdateBEIConfig({ tierOverrides: overrides });
+  };
+
   const handleSetActiveAccount = (tab: BEITabDetail) => {
     if (tab.target === 'gemini') {
       handleUpdateBEIConfig({ target: 'gemini', accountSlot: tab.accountSlot ?? 0 });
@@ -1380,6 +1394,28 @@ const Settings: React.FC<SettingsProps> = ({
                                                     </span>
                                                  )}
                                               </div>
+
+                                              {/* Plan tier: detected or manual override (Pro accounts are used first) */}
+                                              {tab.target === 'gemini' && (() => {
+                                                 const override = beiConfigState.tierOverrides?.[(tab.email || '').toLowerCase()] || 'auto';
+                                                 const effective = override === 'auto' ? (tab.tier || 'unknown') : override;
+                                                 const label = effective === 'pro' ? 'PRO' : effective === 'free' ? 'Free' : 'Tier ?';
+                                                 const color = effective === 'pro'
+                                                    ? 'bg-amber-900/40 text-amber-300 border-amber-500/50'
+                                                    : effective === 'free'
+                                                       ? 'bg-slate-800 text-slate-300 border-slate-600'
+                                                       : 'bg-slate-900 text-slate-400 border-slate-700';
+                                                 return (
+                                                    <button
+                                                       type="button"
+                                                       onClick={() => handleCycleAccountTier(tab)}
+                                                       className={`px-2 py-1 rounded text-[11px] font-bold border transition-colors cursor-pointer ${color}`}
+                                                       title={`Plan: ${label} (${override === 'auto' ? 'auto-detected' : 'manual override'}). Click to cycle Auto -> Pro -> Free. Pro accounts are used first.`}
+                                                    >
+                                                       {label}{override !== 'auto' ? ' *' : ''}
+                                                    </button>
+                                                 );
+                                              })()}
 
                                               {/* Set Active / Active Status */}
                                               {isSelected ? (
