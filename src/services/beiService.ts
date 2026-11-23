@@ -176,6 +176,8 @@ export interface BEITabDetail {
   active?: boolean;
   /** Detected (or overridden) Gemini plan: 'pro' | 'free' | 'unknown'. */
   tier?: string;
+  /** Epoch ms until which the account is skipped after hitting its image limit. */
+  limitedUntil?: number;
 }
 
 export interface BEIJobContext {
@@ -579,6 +581,7 @@ export const generateWithBEI = async (
       // Pro-first routing: the extension prefers Pro accounts; these refine its choice.
       tierOverrides: config.tierOverrides || {},
       priorityOrder: prioritySlots,
+      backgroundMode: config.backgroundMode || 'debugger',
       target: config.target,
       prompt: assembled.imagePromptDirective,
       fullPrompt: assembled.fullPrompt,
@@ -876,6 +879,24 @@ export const resetBEISession = async (tabSessionId?: string): Promise<boolean> =
           tabSessionId,
           preferredBrowser: getEffectiveBEIBrowser()
         })
+      });
+      if (resp.ok) return true;
+    } catch (e) {}
+  }
+  return false;
+};
+
+/** Clears an account's image-limit cooldown so BEI may use it again right away. */
+export const clearBEIAccountLimit = async (email?: string, accountSlot?: number): Promise<boolean> => {
+  const config = getBEIConfig();
+  const port = config.port || DEFAULT_BEI_PORT;
+  const urls = [`http://127.0.0.1:${port}/api/bei/clear-account-limit`, `/api/bei/clear-account-limit`];
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: 'gemini', email, accountSlot, preferredBrowser: getEffectiveBEIBrowser() })
       });
       if (resp.ok) return true;
     } catch (e) {}

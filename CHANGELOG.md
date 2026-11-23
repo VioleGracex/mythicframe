@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.12] — 2026-11-23 *(BEI Extension v1.6.3)*
+
+### Fixed
+- **Jobs stalling while Chrome is minimized or the worker tab is hidden** (and resuming only when you switch back): Chrome stops rendering hidden, covered and minimized tabs, so Gemini's lazy images and observers never fired. Page-level visibility spoofing cannot restart rendering.
+  - New **keep-active** mode (default): while a tab has queued or running work, the extension attaches `chrome.debugger` and enables focus emulation. Chrome then renders the tab as visible and focused even when minimized or behind another tab (verified with a CDP spike on Chrome 157). Detaches 30s after the tab goes idle. Chrome shows a "started debugging this browser" banner while attached.
+  - **Window assist** fallback: if the debugger cannot attach or its banner is cancelled (keep-active pauses 30 min), a stall watchdog restores the window from minimized and switches to the worker tab when a hidden job stops advancing (25s before submission, 75s after). Once the tab is idle, your previous tab is restored and the window re-minimized, unless you are using that window.
+  - Bringing a window to the front now restores it from minimized first (`windows.update({focused:true})` alone never un-minimized it on Windows).
+  - Settings: **Background tabs** option (Keep active / Bring to front on stall / Off).
+  - When MythicFrame launches Chrome itself, it adds flags that disable background throttling and hide the debugger banner (only applies if Chrome was not already running).
+- **Tab sleep (Chrome / Brave Memory Saver)**:
+  - Tabs with queued jobs (not only running ones) are protected from sleeping, and the "free RAM" button skips them.
+  - An idle worker tab may sleep again 2 min after its queue empties.
+  - Frozen tabs are unfrozen via the debugger before a job starts (or brought to the front without it).
+  - If the browser replaces a tab's ID on sleep/wake, its queue, chat state and running jobs move to the new ID.
+- **Audit log**: `KEEP_VISIBLE_ON/OFF/FAILED/CANCELLED`, `STALL_DETECTED` (step, seconds, real page visibility), `WINDOW_ASSIST`, `TAB_ASLEEP`, `TAB_FROZEN`, `TAB_REPLACED`.
+- **Accounts that hit Gemini's image limit kept being used**:
+  - The limit reply ("I can create more images as soon as your limit resets") was only read once Gemini looked finished. Gemini often still showed its stop button/loader, so the job was treated as "stuck" for 180s, then the same prompt was re-sent to the same account, and the account never got a cooldown. Limit replies are now checked on every poll and never re-sent.
+  - Cooldown is now per account email (not slot) and persisted across extension restarts. Default 3h; uses Gemini's reset time when the reply contains one; re-hitting the limit within 10 min of a cooldown ending doubles it (max 12h). Transient "try again later" errors cool down 10 min.
+  - A job that names a limited account goes to the next best account (Pro first). Jobs waiting in the limited account's queue move to other accounts. The job that hit the limit is retried once on another account instead of failing. If every account is limited, jobs fail immediately with the earliest reset time.
+  - Settings shows "Limit · resets in Xh Ym" on limited Gemini accounts, with a **Clear** button.
+  - Audit log: `ACCOUNT_LIMIT`, `ACCOUNT_SKIPPED_LIMIT`, `JOB_REROUTED_LIMIT`, `ALL_ACCOUNTS_LIMITED`, `ACCOUNT_LIMIT_CLEARED`.
+
+---
+
 ## [1.6.11] — 2026-11-22 *(BEI Extension v1.6.2)*
 
 ### Fixed

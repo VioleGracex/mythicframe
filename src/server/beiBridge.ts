@@ -106,6 +106,9 @@ export interface BEITabInfo {
   title?: string;
   status?: string;
   active?: boolean;
+  tier?: string;
+  /** Epoch ms until which this account is skipped after hitting its image limit. */
+  limitedUntil?: number;
 }
 
 export interface BEIAccountInfo {
@@ -306,7 +309,15 @@ export class BEIBridgeServer {
         if (fs.existsSync(p)) {
           try {
             console.log(`[MythicFrame BEI Bridge] Auto-launching Google Chrome at: ${p}`);
-            spawn(p, ['https://gemini.google.com/u/0/app'], { detached: true, stdio: 'ignore' }).unref();
+            // Only applies when Chrome is not already running: keep background/minimized tabs
+            // rendering and hide the extension-debugger banner used by BEI keep-active mode.
+            const flags = [
+              '--disable-background-timer-throttling',
+              '--disable-renderer-backgrounding',
+              '--disable-backgrounding-occluded-windows',
+              '--silent-debugger-extension-api',
+            ];
+            spawn(p, [...flags, 'https://gemini.google.com/u/0/app'], { detached: true, stdio: 'ignore' }).unref();
             launched = true;
             break;
           } catch (e) {
@@ -577,6 +588,11 @@ export class BEIBridgeServer {
 
         if (req.method === 'POST' && url.pathname === '/api/bei/scan-accounts') {
           this.handleScanAccountsRequest(req, res);
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/bei/clear-account-limit') {
+          this.handleClearAccountLimitRequest(req, res);
           return;
         }
 
@@ -1295,6 +1311,7 @@ export class BEIBridgeServer {
             proEmails: Array.isArray(payload.proEmails) ? payload.proEmails.slice(0, 50) : undefined,
             tierOverrides: payload.tierOverrides && typeof payload.tierOverrides === 'object' ? payload.tierOverrides : undefined,
             priorityOrder: Array.isArray(payload.priorityOrder) ? payload.priorityOrder.slice(0, 20) : undefined,
+            backgroundMode: ['debugger', 'assist', 'off'].includes(payload.backgroundMode) ? payload.backgroundMode : undefined,
             quality: payload.quality || 'ultra_original',
             dispatchMode: payload.dispatchMode || 'single'
           }
@@ -1696,6 +1713,26 @@ export class BEIBridgeServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, scanning: true, message: 'Google account scan initiated in browser background.' }));
+  }
+
+  /** Clears an account's image-limit cooldown in the extension (Settings "Clear" button). */
+  public async handleClearAccountLimitRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    if (!this.isConnected()) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'EXTENSION_NOT_CONNECTED', message: 'BEI Chrome Extension is not connected.' }));
+      return;
+    }
+    const payload = await this.parseRequestBody(req).catch(() => ({}));
+    const { email, accountSlot, target = 'gemini', preferredBrowser } = payload || {};
+    const targetSocket = this.getClientSocket(preferredBrowser) || this.extensionSocket;
+    targetSocket?.send(JSON.stringify({ type: 'CLEAR_ACCOUNT_LIMIT', data: { target, email, accountSlot } }));
+    for (const t of this.knownTabs) {
+      if (t.target === target && ((email && t.email && t.email.toLowerCase() === String(email).toLowerCase()) || (!email && t.accountSlot === accountSlot))) {
+        t.limitedUntil = undefined;
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
   }
 
   public handleReloadExtensionRequest(req: http.IncomingMessage, res: http.ServerResponse) {

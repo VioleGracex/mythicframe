@@ -66,6 +66,8 @@ export interface BEIConfig {
   preferredBrowser?: 'auto' | 'chrome' | 'brave' | 'edge';
   /** Manual account tier per email. 'auto' (or missing) = use detection from the Gemini page. */
   tierOverrides?: Record<string, 'pro' | 'free' | 'auto'>;
+  /** How worker tabs keep running while Chrome is minimized or the tab is hidden. Default 'debugger'. */
+  backgroundMode?: 'debugger' | 'assist' | 'off';
 }
 
 export interface AIConfig {

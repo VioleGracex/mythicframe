@@ -265,6 +265,31 @@
     /лимит исчерпан/i
   ];
 
+  // Definitive account-limit replies. Checked on every poll, even while Gemini still shows a
+  // stop button / loader (the old code only read the reply once Gemini looked finished, so a
+  // limit reply was treated as "stuck" for 180s and the prompt was re-sent to the same account).
+  const GEMINI_HARD_LIMIT_PATTERNS = [
+    /limit resets/i,
+    /reached your (daily |image |usage )?limit/i,
+    /(daily|usage|image generation) limit reached/i,
+    /exceeded your (limit|quota)/i,
+    /hit your limit/i,
+    /create more images (as soon as|when|once|after)/i,
+    /достигнут дневной лимит/i,
+    /лимит исчерпан/i
+  ];
+
+  /** Returns the text of a NEW model response that is an account-limit reply, or ''. */
+  function findLimitReply(existingResponseSet) {
+    const els = Array.from(document.querySelectorAll('model-response, message-content, div.response-container, [data-test-id*="response"]'))
+      .filter(r => !existingResponseSet.has(r) && !r.closest('user-query, .user-query, .chat-input-container'));
+    for (let i = els.length - 1; i >= 0; i--) {
+      const text = (els[i].innerText || els[i].textContent || '').trim();
+      if (text && text.length < 1500 && GEMINI_HARD_LIMIT_PATTERNS.some(p => p.test(text))) return text;
+    }
+    return '';
+  }
+
   const GEMINI_CANCELLATION_PATTERNS = [
     /response generation stopped/i,
     /generation stopped/i,
@@ -2236,6 +2261,26 @@
         const currentModelResponses = Array.from(document.querySelectorAll('model-response, message-content, [data-test-id*="model-response"], [data-test-id*="response"], .model-response-text, .response-container, conversation-turn'))
           .filter(r => !r.closest('user-query, .user-query, .chat-input-container'));
 
+        const limitReply = findLimitReply(existingResponses);
+        if (limitReply) {
+          clearInterval(checkInterval);
+          if (window.__MYTHIC_BEI_ACTIVE_INTERVAL__ === checkInterval) window.__MYTHIC_BEI_ACTIVE_INTERVAL__ = null;
+          activeRunningJobId = null;
+          activeCancelHandler = null;
+          if (keepAlivePort) keepAlivePort.disconnect();
+          clickStopButton();
+          clearComposer();
+          const limitMsg = `Gemini account limit reached: "${limitReply.substring(0, 200)}"`;
+          console.warn(`[MythicFrame BEI] ${limitMsg}`);
+          try {
+            chrome.runtime.sendMessage({
+              type: 'GENERATION_FAILED',
+              data: { jobId, error: limitMsg, isRateLimited: true, limitKind: 'hard', limitText: limitReply.substring(0, 400) }
+            });
+          } catch (e) {}
+          return;
+        }
+
         const isActivelyGenerating = isGeminiActivelyGenerating();
         // Detect if stuck with no output:
         // 1. Elapsed > 180s and Gemini stopped generating without producing any response container
@@ -2492,7 +2537,7 @@
                 try {
                   chrome.runtime.sendMessage({
                     type: 'GENERATION_FAILED',
-                    data: { jobId, error: quotaMsg }
+                    data: { jobId, error: quotaMsg, isRateLimited: true, limitText: respText.substring(0, 400) }
                   });
                 } catch (e) {}
                 return;
@@ -2567,7 +2612,7 @@
                 try {
                   chrome.runtime.sendMessage({
                     type: 'GENERATION_FAILED',
-                    data: { jobId, error: quotaMsg }
+                    data: { jobId, error: quotaMsg, isRateLimited: true, limitText: toastText.substring(0, 400) }
                   });
                 } catch (e) {}
                 return;
@@ -2838,6 +2883,12 @@
       const { jobId, prompt, timeoutSeconds, images, quality, aspectRatio, modelQuality, chatSessionMode } = request.data || {};
       executePrompt(jobId, prompt, timeoutSeconds, images, quality || 'ultra_original', aspectRatio || '1:1', modelQuality || 'auto', 0, chatSessionMode || 'same_chat');
       sendResponse({ success: true, started: true });
+      return true;
+    }
+
+    if (request.action === 'PAGE_VISIBILITY') {
+      // Isolated world: sees the real state (page_visibility.js only spoofs the MAIN world).
+      sendResponse({ success: true, state: document.visibilityState });
       return true;
     }
 

@@ -45,22 +45,149 @@ const pendingFullSizeCaptures = new Map(); // jobId -> { resolve, timer } for na
 let lastGeminiDownloadId = null;           // most recent Gemini image download observed while a capture was armed
 let lastGeminiDownloadAt = 0;
 const removeWhenComplete = new Set();      // download ids to delete from disk once they finish
-const exhaustedSlots = new Map();          // slotKey -> timestamp until which the slot is exhausted
+// ─── ACCOUNT LIMIT COOLDOWNS ─────────────────────────────────────────────────
+// Keyed by account email (slots can shift between accounts) and persisted, so a limited account
+// stays skipped across service-worker restarts. Default 3h for a real limit reply; re-hitting the
+// limit within 10 min of a cooldown ending doubles it (max 12h). Transient "try again later" = 10 min.
+const accountLimits = new Map(); // key -> { until, durationMs, kind, text, slot, email, at }
+const LIMIT_DEFAULT_MS = 3 * 3600000;
+const LIMIT_TRANSIENT_MS = 10 * 60000;
+const LIMIT_MAX_MS = 12 * 3600000;
+const LIMIT_REHIT_WINDOW_MS = 10 * 60000;
 
-function markSlotExhausted(target, slot, durationMs = 1800000) { // 30 min cooldown
-  const key = getSlotKey(target, slot);
-  exhaustedSlots.set(key, Date.now() + durationMs);
-  console.warn(`[MythicFrame BEI] Marked slot ${key} as QUOTA EXHAUSTED for ${Math.round(durationMs / 60000)} min.`);
+function limitKey(target, slot) {
+  const email = target === 'gemini' ? (knownGoogleAccounts.get(slot)?.email || '') : '';
+  return email ? `${target}:${email.toLowerCase()}` : `${target}:slot:${slot}`;
+}
+
+function persistAccountLimits() {
+  try { chrome.storage.local.set({ mythicAccountLimits: Array.from(accountLimits.entries()) }); } catch (e) {}
+}
+
+try {
+  chrome.storage.local.get(['mythicAccountLimits'], (res) => {
+    if (res && Array.isArray(res.mythicAccountLimits)) {
+      for (const [k, v] of res.mythicAccountLimits) {
+        if (v && v.until && Date.now() - v.until < 24 * 3600000 && !accountLimits.has(k)) accountLimits.set(k, v);
+      }
+    }
+  });
+} catch (e) {}
+
+/** Reads a reset time out of Gemini's limit text ("resets in 2 hours", "at 4:30 PM"). Returns ms from now, or null. */
+function parseLimitReset(text, now = Date.now()) {
+  const t = String(text || '').toLowerCase();
+  let m = t.match(/in\s+(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/);
+  if (m) {
+    const n = parseFloat(m[1]);
+    const ms = /^h/.test(m[2]) ? n * 3600000 : n * 60000;
+    if (ms > 0 && ms <= LIMIT_MAX_MS * 2) return ms;
+  }
+  m = t.match(/at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+  if (m) {
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2] || '0', 10);
+    if (m[3] === 'pm' && h < 12) h += 12;
+    if (m[3] === 'am' && h === 12) h = 0;
+    if (h < 24 && min < 60 && (m[2] || m[3])) {
+      const d = new Date(now);
+      d.setHours(h, min, 0, 0);
+      if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+      return d.getTime() - now;
+    }
+  }
+  return null;
+}
+
+function classifyLimit(text) {
+  const t = String(text || '');
+  if (/limit resets|reached your (daily |image |usage )?limit|(daily|usage|image generation) limit reached|exceeded your (limit|quota)|hit your limit|create more images|дневной лимит|лимит исчерпан/i.test(t)) return 'hard';
+  return 'transient';
+}
+
+function formatDuration(ms) {
+  const mins = Math.max(1, Math.round(ms / 60000));
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+/** Marks the account on this slot as limited. Returns the cooldown entry. */
+function markSlotExhausted(target, slot, info = {}) {
+  const now = Date.now();
+  const key = limitKey(target, slot);
+  const prev = accountLimits.get(key);
+  const kind = info.kind || classifyLimit(info.text);
+  let durationMs = kind === 'hard' ? LIMIT_DEFAULT_MS : LIMIT_TRANSIENT_MS;
+  const parsed = kind === 'hard' ? parseLimitReset(info.text, now) : null;
+  if (parsed) {
+    durationMs = parsed;
+  } else if (kind === 'hard' && prev && prev.until <= now && now - prev.until < LIMIT_REHIT_WINDOW_MS) {
+    durationMs = Math.min(LIMIT_MAX_MS, Math.max(LIMIT_DEFAULT_MS, (prev.durationMs || LIMIT_DEFAULT_MS) * 2));
+  }
+  if (prev && prev.until > now && prev.until > now + durationMs) durationMs = prev.until - now; // never shorten
+  const email = target === 'gemini' ? (knownGoogleAccounts.get(slot)?.email || '') : '';
+  const entry = { until: now + durationMs, durationMs, kind, text: String(info.text || '').slice(0, 200), slot, email, at: now };
+  accountLimits.set(key, entry);
+  persistAccountLimits();
+  emitAuditLog('ACCOUNT_LIMIT', `${target} slot ${slot} (${maskEmail(email) || 'unknown account'}) hit its ${kind === 'hard' ? 'image limit' : 'rate limit'}; skipped for ${formatDuration(durationMs)}${parsed ? ' (reset time from Gemini)' : ''}`, {
+    target, accountSlot: slot, email: maskEmail(email)
+  });
+  pushTabsList();
+  return entry;
+}
+
+/** Timestamp until which the account on this slot is limited, or 0. */
+function getSlotLimitUntil(target, slot) {
+  const e = accountLimits.get(limitKey(target, slot));
+  return e && e.until > Date.now() ? e.until : 0;
 }
 
 function isSlotExhausted(target, slot) {
-  const key = getSlotKey(target, slot);
-  if (!exhaustedSlots.has(key)) return false;
-  if (Date.now() > exhaustedSlots.get(key)) {
-    exhaustedSlots.delete(key);
-    return false;
+  return getSlotLimitUntil(target, slot) > 0;
+}
+
+/** Earliest reset among limited accounts of a target (ms timestamp), or 0. */
+function soonestLimitReset(target) {
+  let best = 0;
+  for (const [k, e] of accountLimits) {
+    if (k.startsWith(`${target}:`) && e.until > Date.now() && (!best || e.until < best)) best = e.until;
   }
-  return true;
+  return best;
+}
+
+function clearAccountLimit(target, { email, slot } = {}) {
+  let cleared = 0;
+  for (const [k, e] of Array.from(accountLimits.entries())) {
+    if (!k.startsWith(`${target}:`)) continue;
+    const byEmail = email && e.email && e.email.toLowerCase() === String(email).toLowerCase();
+    const bySlot = slot !== undefined && slot !== null && e.slot === slot && (!email || !e.email);
+    if (byEmail || bySlot || (!email && (slot === undefined || slot === null))) {
+      // keep it as expired so a quick re-hit still doubles the next cooldown
+      accountLimits.set(k, { ...e, until: Date.now() - 1 });
+      cleared++;
+    }
+  }
+  if (cleared) {
+    persistAccountLimits();
+    emitAuditLog('ACCOUNT_LIMIT_CLEARED', `Cleared ${cleared} account limit(s) manually`, { target });
+    pushTabsList();
+  }
+  return cleared;
+}
+
+/** Pushes the tab list (with limitedUntil) so Settings shows the timer without waiting for a rescan. */
+function pushTabsList() {
+  discoverTabs().then(tabs => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "tabs_list", data: { tabs, accounts: Array.from(knownGoogleAccounts.values()) } }));
+    }
+  }).catch(() => {});
+}
+
+function allLimitedMessage(target) {
+  const soon = soonestLimitReset(target);
+  return `All ${target === 'gemini' ? 'Gemini' : target} accounts are at their image limit${soon ? ` (earliest reset in ${formatDuration(soon - Date.now())})` : ''}.`;
 }
 
 // ─── ACCOUNT TIERS ───────────────────────────────────────────────────────────
@@ -851,6 +978,7 @@ async function discoverTabs() {
           accountSlot: slot,
           email: email || (knownGoogleAccounts.get(slot)?.email) || undefined,
           tier: getAccountTier(knownGoogleAccounts.get(slot)),
+          limitedUntil: getSlotLimitUntil('gemini', slot) || undefined,
           chatName,
           title: tab.title || "Gemini Web",
           active: tab.active
@@ -900,7 +1028,7 @@ async function organizeTabIntoBEIGroup(tabId, tabMode = 'new_window_group', brin
             try {
               await chrome.tabs.update(tab.id, { active: true });
               if (tab.windowId) {
-                await chrome.windows.update(tab.windowId, { focused: true });
+                await focusWindow(tab.windowId);
               }
             } catch (e) {}
           }
@@ -993,7 +1121,7 @@ async function organizeTabIntoBEIGroup(tabId, tabMode = 'new_window_group', brin
       await chrome.tabs.update(tab.id, { active: true });
       const targetWinId = existingGroup ? existingGroup.windowId : (beiDedicatedWindowId || tab.windowId);
       if (targetWinId) {
-        await chrome.windows.update(targetWinId, { focused: true });
+        await focusWindow(targetWinId);
       }
     }
   } catch (err) {
@@ -1726,6 +1854,7 @@ async function routeJobToTab(job) {
     throw new Error(`Tab queue full for ${job.target} (slot ${job.accountSlot}, tab ${tabId}).`);
   }
   q.push(job);
+  protectTab(tabId);
 
   const ahead = q.length - 1 + (isTabWorking(tabId) ? 1 : 0);
   if (ahead > 0) {
@@ -1742,10 +1871,268 @@ async function routeJobToTab(job) {
   return tabId;
 }
 
+// ─── BACKGROUND MODE: keep worker tabs running while hidden / minimized ──────
+// Chrome stops rendering hidden, covered and minimized tabs (no lazy images, no IntersectionObserver,
+// timers throttled), so Gemini stalls until the user switches back to the tab. Modes:
+//   'debugger' (default): while a tab has work, attach chrome.debugger and enable focus emulation.
+//                         Chrome then renders the tab as visible + focused even when minimized.
+//                         Falls back to window assist if the debugger cannot attach or is cancelled.
+//   'assist':             no debugger; when a hidden job stops progressing, restore the window and
+//                         switch to the worker tab (undone when the tab goes idle, if untouched).
+//   'off':                never touch windows (old behavior).
+let backgroundMode = 'debugger';
+const keepVisibleTabs = new Set();   // tabIds with focus emulation on
+const tabIdleTimers = new Map();     // tabId -> { visible, discard } timeout ids
+const assistedWindows = new Map();   // windowId -> { tabId, prevTabId, wasMinimized }
+const windowStates = new Map();      // windowId -> last non-minimized state ('normal' | 'maximized')
+let debuggerBlockedUntil = 0;
+const KEEP_VISIBLE_RELEASE_MS = 30000;      // detach (removes the debugger banner) 30s after a tab goes idle
+const DISCARD_PROTECT_RELEASE_MS = 120000;  // let the browser sleep an idle tab again after 2 min
+const STALL_PRE_SUBMIT_MS = 25000;
+const STALL_SUBMITTED_MS = 75000;
+
+try {
+  chrome.storage.local.get(['mythicBackgroundMode'], (res) => {
+    const m = res && res.mythicBackgroundMode;
+    if (m === 'debugger' || m === 'assist' || m === 'off') backgroundMode = m;
+  });
+} catch (e) {}
+
+function setBackgroundMode(mode) {
+  const m = String(mode || '').toLowerCase();
+  if (!['debugger', 'assist', 'off'].includes(m) || m === backgroundMode) return;
+  backgroundMode = m;
+  try { chrome.storage.local.set({ mythicBackgroundMode: m }); } catch (e) {}
+  emitAuditLog('BACKGROUND_MODE', `Background tab mode set to "${m}"`, {});
+  if (m !== 'debugger') for (const tabId of Array.from(keepVisibleTabs)) releaseTabVisible(tabId);
+}
+
+/** Restores a minimized window (focused:true alone never does on Windows), then focuses it. */
+async function focusWindow(windowId) {
+  if (!windowId) return;
+  try {
+    const win = await chrome.windows.get(windowId);
+    if (win && win.state === 'minimized') {
+      await chrome.windows.update(windowId, { state: windowStates.get(windowId) || 'normal' });
+    }
+  } catch (e) {}
+  try { await chrome.windows.update(windowId, { focused: true }); } catch (e) {}
+}
+
+function rememberWindowState(windowId) {
+  if (!windowId) return;
+  chrome.windows.get(windowId).then(win => {
+    if (win && (win.state === 'normal' || win.state === 'maximized')) windowStates.set(windowId, win.state);
+  }).catch(() => {});
+}
+
+function debuggerSend(tabId, method, params = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.debugger.sendCommand({ tabId }, method, params, (res) => {
+        const err = chrome.runtime.lastError;
+        if (err) reject(new Error(err.message)); else resolve(res);
+      });
+    } catch (e) { reject(e); }
+  });
+}
+
+/** Focus emulation keeps the tab "visible" (rendering, observers, unthrottled timers) while hidden or minimized. */
+async function keepTabVisible(tabId) {
+  if (backgroundMode !== 'debugger' || !chrome.debugger || Date.now() < debuggerBlockedUntil) return false;
+  if (keepVisibleTabs.has(tabId)) {
+    try { await debuggerSend(tabId, 'Page.setWebLifecycleState', { state: 'active' }); } catch (e) {}
+    return true;
+  }
+  try {
+    const attachErr = await new Promise((resolve) => {
+      chrome.debugger.attach({ tabId }, '1.3', () => {
+        const err = chrome.runtime.lastError;
+        resolve(err ? err.message : null);
+      });
+    });
+    // After a service-worker restart our old session may still be attached: reuse it if it answers.
+    await debuggerSend(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch((e) => {
+      throw new Error(attachErr || e.message);
+    });
+    try { await debuggerSend(tabId, 'Page.setWebLifecycleState', { state: 'active' }); } catch (e) {}
+    keepVisibleTabs.add(tabId);
+    emitAuditLog('KEEP_VISIBLE_ON', `Tab ${tabId} kept active in the background (focus emulation)`, { tabId, email: maskEmail(tabEmailsCache.get(tabId)) });
+    return true;
+  } catch (e) {
+    emitAuditLog('KEEP_VISIBLE_FAILED', `Could not keep tab ${tabId} active in the background (${e.message}); window assist will be used if it stalls`, { tabId });
+    return false;
+  }
+}
+
+async function releaseTabVisible(tabId) {
+  if (!keepVisibleTabs.has(tabId)) return;
+  keepVisibleTabs.delete(tabId);
+  try { await debuggerSend(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false }); } catch (e) {}
+  try { chrome.debugger.detach({ tabId }, () => void chrome.runtime.lastError); } catch (e) {}
+  emitAuditLog('KEEP_VISIBLE_OFF', `Tab ${tabId} idle: released background keep-active`, { tabId });
+}
+
+if (chrome.debugger && chrome.debugger.onDetach) {
+  chrome.debugger.onDetach.addListener((source, reason) => {
+    const tabId = source && source.tabId;
+    if (!tabId || !keepVisibleTabs.has(tabId)) return;
+    keepVisibleTabs.delete(tabId);
+    if (reason === 'canceled_by_user') {
+      debuggerBlockedUntil = Date.now() + 30 * 60000;
+      emitAuditLog('KEEP_VISIBLE_CANCELLED', 'Debugger banner was cancelled: background keep-active paused for 30 min, window assist is used instead', { tabId });
+    } else if (getTabLoad(tabId) > 0) {
+      setTimeout(() => keepTabVisible(tabId), 1000);
+    }
+  });
+}
+
+function clearTabIdle(tabId) {
+  const t = tabIdleTimers.get(tabId);
+  if (t) { clearTimeout(t.visible); clearTimeout(t.discard); tabIdleTimers.delete(tabId); }
+}
+
+/** Tab has queued or running work: never let the browser sleep it. */
+function protectTab(tabId) {
+  clearTabIdle(tabId);
+  chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+}
+
+/** Called right before a job starts on the tab. Returns true when focus emulation is active. */
+async function markTabBusy(tabId) {
+  protectTab(tabId);
+  return keepTabVisible(tabId);
+}
+
+/** Called when the tab's queue is empty and nothing runs: release keep-active, undo window assist, allow sleep later. */
+function markTabIdle(tabId) {
+  if (getTabLoad(tabId) > 0 || tabIdleTimers.has(tabId)) return;
+  endWindowAssist(tabId);
+  tabIdleTimers.set(tabId, {
+    visible: setTimeout(() => { if (getTabLoad(tabId) === 0) releaseTabVisible(tabId); }, KEEP_VISIBLE_RELEASE_MS),
+    discard: setTimeout(() => {
+      tabIdleTimers.delete(tabId);
+      if (getTabLoad(tabId) === 0) chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
+    }, DISCARD_PROTECT_RELEASE_MS)
+  });
+}
+
+/** Real page visibility from the isolated world (page_visibility.js only spoofs the MAIN world). */
+function getRealVisibility(tabId) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('unresponsive'), 2000);
+    try {
+      chrome.tabs.sendMessage(tabId, { action: 'PAGE_VISIBILITY' }, (res) => {
+        clearTimeout(timer);
+        void chrome.runtime.lastError;
+        resolve(res && res.state ? res.state : 'unknown');
+      });
+    } catch (e) { clearTimeout(timer); resolve('unknown'); }
+  });
+}
+
+/** Restores the window from minimized and activates the worker tab (fallback when the debugger is unavailable). */
+async function assistWindow(tabId, jobId, reason) {
+  if (backgroundMode === 'off') return false;
+  let tab, win;
+  try { tab = await chrome.tabs.get(tabId); win = await chrome.windows.get(tab.windowId); } catch (e) { return false; }
+  const wasMinimized = win.state === 'minimized';
+  if (!assistedWindows.has(win.id)) {
+    let prevTabId = null;
+    if (!tab.active) {
+      try { const [act] = await chrome.tabs.query({ active: true, windowId: win.id }); prevTabId = act ? act.id : null; } catch (e) {}
+    }
+    assistedWindows.set(win.id, { tabId, prevTabId, wasMinimized });
+  }
+  try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
+  await focusWindow(win.id);
+  emitAuditLog('WINDOW_ASSIST', `Brought tab ${tabId} to the front for job ${jobId} (${reason}${wasMinimized ? ', window was minimized' : ''})`, {
+    jobId, tabId, email: maskEmail(tabEmailsCache.get(tabId))
+  });
+  return true;
+}
+
+/** Puts the user's previous tab back (and re-minimizes) once the assisted tab is idle, unless the user is using the window. */
+async function endWindowAssist(tabId) {
+  for (const [winId, a] of Array.from(assistedWindows.entries())) {
+    if (a.tabId !== tabId) continue;
+    assistedWindows.delete(winId);
+    try {
+      const win = await chrome.windows.get(winId);
+      if (!win || win.focused) continue;
+      const [act] = await chrome.tabs.query({ active: true, windowId: winId });
+      if (!act || act.id !== tabId) continue;
+      if (a.prevTabId) await chrome.tabs.update(a.prevTabId, { active: true }).catch(() => {});
+      if (a.wasMinimized) await chrome.windows.update(winId, { state: 'minimized' }).catch(() => {});
+    } catch (e) {}
+  }
+}
+
+/** Stall watchdog: a hidden job that stops advancing gets keep-active, or window assist as fallback. */
+let stallWatchdogBusy = false;
+setInterval(async () => {
+  if (stallWatchdogBusy || backgroundMode === 'off' || activeJobs.size === 0) return;
+  stallWatchdogBusy = true;
+  try {
+    for (const [jobId, job] of Array.from(activeJobs.entries())) {
+      if (!job.tabId) continue;
+      const since = Date.now() - (job.lastStepAt || job.startedAt || Date.now());
+      const limit = job.submitted ? STALL_SUBMITTED_MS : STALL_PRE_SUBMIT_MS;
+      if (since < limit) continue;
+      if (job.assistedAt && Date.now() - job.assistedAt < 60000) continue;
+      const vis = await getRealVisibility(job.tabId);
+      if (vis === 'visible') continue;
+      if (vis === 'unknown') {
+        try {
+          const tab = await chrome.tabs.get(job.tabId);
+          const win = await chrome.windows.get(tab.windowId);
+          if (tab.active && win.state !== 'minimized') continue;
+        } catch (e) { continue; }
+      }
+      job.assistedAt = Date.now();
+      const where = `${Math.round(since / 1000)}s at step "${job.lastStep || 'start'}" (page: ${vis})`;
+      if (await keepTabVisible(job.tabId)) {
+        emitAuditLog('STALL_DETECTED', `Job ${jobId} stalled ${where} while hidden; tab ${job.tabId} kept active via focus emulation`, { jobId, tabId: job.tabId });
+        continue;
+      }
+      emitAuditLog('STALL_DETECTED', `Job ${jobId} stalled ${where} while hidden; bringing tab ${job.tabId} to the front`, { jobId, tabId: job.tabId });
+      await assistWindow(job.tabId, jobId, 'stalled while hidden');
+    }
+  } finally {
+    stallWatchdogBusy = false;
+  }
+}, 5000);
+
+/** Jobs waiting on a limited account's tabs move to another account (or fail fast if all are limited). */
+function rerouteQueuedJobsOffSlot(target, slot) {
+  const moved = [];
+  for (const [tabId, q] of tabQueues.entries()) {
+    const keep = [];
+    for (const job of q) {
+      if (job.target === target && job.accountSlot === slot) moved.push(job); else keep.push(job);
+    }
+    if (keep.length !== q.length) tabQueues.set(tabId, keep);
+  }
+  for (const job of moved) {
+    const choice = target === 'gemini' ? chooseGeminiAccount(slot, job.dispatchMode) : null;
+    if (!choice || choice.slot === slot) {
+      sendToBridge({ type: "GENERATION_FAILED", data: { jobId: job.jobId, error: allLimitedMessage(target) } });
+      continue;
+    }
+    emitAuditLog('JOB_REROUTED_LIMIT', `Queued job ${job.jobId} moved from limited slot ${slot} to slot ${choice.slot}`, {
+      jobId: job.jobId, target, accountSlot: choice.slot, email: maskEmail(knownGoogleAccounts.get(choice.slot)?.email)
+    });
+    routeJobToTab({ ...job, accountSlot: choice.slot }).catch(err => {
+      sendToBridge({ type: "GENERATION_FAILED", data: { jobId: job.jobId, error: `Re-route after account limit failed: ${err.message || err}` } });
+    });
+  }
+  return moved.length;
+}
+
 async function processTabQueue(tabId) {
   if (!tabId || isTabWorking(tabId)) return;
   const q = tabQueues.get(tabId);
-  if (!q || q.length === 0) return;
+  if (!q || q.length === 0) { markTabIdle(tabId); return; }
   const job = q.shift();
 
   if (cancelledJobIds.has(job.jobId)) return processTabQueue(tabId);
@@ -1811,7 +2198,7 @@ async function prepareWorkerTab(tab, target, slot, chatMode, tabMode, bringTabTo
     try {
       await chrome.tabs.update(tabId, { active: true });
       const info = await chrome.tabs.get(tabId);
-      if (info && info.windowId) { try { await chrome.windows.update(info.windowId, { focused: true }); } catch (e) {} }
+      if (info && info.windowId) { try { await focusWindow(info.windowId); } catch (e) {} }
     } catch (e) {}
   }
 
@@ -1842,6 +2229,16 @@ async function startJobOnTab(job, tabId) {
   let tab;
   try { tab = await chrome.tabs.get(tabId); } catch (e) { throw new Error(`Worker tab ${tabId} no longer exists`); }
 
+  rememberWindowState(tab.windowId);
+  const kept = await markTabBusy(tabId);
+  if (tab.discarded) {
+    emitAuditLog('TAB_ASLEEP', `Tab ${tabId} was asleep (discarded to free RAM); reloading it for job ${jobId}`, { jobId, tabId, target, accountSlot });
+  }
+  if (tab.frozen) {
+    emitAuditLog('TAB_FROZEN', `Tab ${tabId} was frozen by the browser before job ${jobId}${kept ? '; unfrozen via focus emulation' : '; bringing it to the front'}`, { jobId, tabId, target, accountSlot });
+    if (!kept) await assistWindow(tabId, jobId, 'tab frozen');
+  }
+
   const [chatMode, chatReason] = decideChatMode(tab, job);
   await prepareWorkerTab(tab, target, accountSlot, chatMode, tabMode, bringTabToFront);
   if (cancelledJobIds.has(jobId)) throw new Error('Job was cancelled before it started');
@@ -1853,7 +2250,9 @@ async function startJobOnTab(job, tabId) {
   activeJobs.set(jobId, {
     tabId, target, prompt, fullPrompt, images, timeoutSeconds, tabMode, bringTabToFront, quality,
     accountSlot, aspectRatio, modelQuality, submitted: false, dispatchMode: dispatchMode || 'single',
-    projectId, chatMode, chatReason, receivedAt: job.receivedAt, startedAt: Date.now()
+    projectId, chatMode, chatReason, receivedAt: job.receivedAt, startedAt: Date.now(),
+    source, deadline: job.deadline, tabSessionId: job.tabSessionId, chatSessionMode: job.chatSessionMode,
+    limitRerouted: Boolean(job.limitRerouted)
   });
   persistSessionJobs();
   noteChatTurn(tabId, job, chatMode);
@@ -1932,6 +2331,14 @@ async function handleBridgeCommand(msg) {
     return;
   }
 
+  if (type === "CLEAR_ACCOUNT_LIMIT") {
+    const { target = 'gemini', email, accountSlot } = data || {};
+    const slot = accountSlot === undefined || accountSlot === null ? undefined : (parseInt(accountSlot, 10) || 0);
+    const cleared = clearAccountLimit(target, { email, slot });
+    sendToBridge({ type: "ACCOUNT_LIMIT_CLEARED", data: { success: true, cleared, email: email ? maskEmail(email) : undefined } });
+    return;
+  }
+
   if (type === "SET_ACTIVE_TAB") {
     const { target = "gemini", accountSlot = 0, bringTabToFront = false } = data || {};
     const parsedSlot = (typeof accountSlot === 'number') ? accountSlot : (parseInt(accountSlot, 10) || 0);
@@ -1942,7 +2349,7 @@ async function handleBridgeCommand(msg) {
           await chrome.tabs.update(tabId, { active: true });
           const tab = await chrome.tabs.get(tabId);
           if (tab && tab.windowId) {
-            try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
+            try { await focusWindow(tab.windowId); } catch (e) {}
           }
         }
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1978,7 +2385,7 @@ async function handleBridgeCommand(msg) {
         await chrome.tabs.update(tabId, { active: true });
         const tab = await chrome.tabs.get(tabId);
         if (tab && tab.windowId) {
-          try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (e) {}
+          try { await focusWindow(tab.windowId); } catch (e) {}
         }
       }
 
@@ -2117,6 +2524,7 @@ async function handleBridgeCommand(msg) {
     let parsedSlot = (typeof data.accountSlot === 'number') ? data.accountSlot : undefined;
 
     applyTierOverrides(data.proEmails, data.tierOverrides);
+    if (data.backgroundMode) setBackgroundMode(data.backgroundMode);
     if (Array.isArray(data.priorityOrder)) {
       lastAccountPriorityOrder = data.priorityOrder.map(n => parseInt(n, 10)).filter(n => !isNaN(n));
     }
@@ -2138,11 +2546,24 @@ async function handleBridgeCommand(msg) {
         }
       }
     }
+    if (pinnedByEmail && target === 'gemini' && isSlotExhausted('gemini', parsedSlot)) {
+      const until = getSlotLimitUntil('gemini', parsedSlot);
+      emitAuditLog('ACCOUNT_SKIPPED_LIMIT', `Job ${jobId}: requested account on slot ${parsedSlot} is at its limit (resets in ${formatDuration(until - Date.now())}); using the next best account`, {
+        jobId, target, accountSlot: parsedSlot, email: maskEmail(knownGoogleAccounts.get(parsedSlot)?.email)
+      });
+      pinnedByEmail = false;
+    }
     if (!pinnedByEmail && target === 'gemini') {
       const choice = chooseGeminiAccount(parsedSlot, dispatchMode);
       if (choice) {
         parsedSlot = choice.slot;
         routeReason = `${choice.reason} [accounts: ${choice.summary}]`;
+      } else if (Array.from(knownGoogleAccounts.values()).some(a => a && a.email)) {
+        // Accounts are known but every one is limited: fail now instead of hitting the limit again.
+        const msg = allLimitedMessage('gemini');
+        emitAuditLog('ALL_ACCOUNTS_LIMITED', `Job ${jobId}: ${msg}`, { jobId, target });
+        sendToBridge({ type: "GENERATION_FAILED", data: { jobId, error: msg } });
+        return;
       }
     }
     if (parsedSlot === undefined) parsedSlot = 0;
@@ -2448,6 +2869,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "GENERATION_PROGRESS") {
+    const pj = message.data && activeJobs.get(message.data.jobId);
+    if (pj && message.data.step && pj.lastStep !== message.data.step) {
+      pj.lastStep = message.data.step;
+      pj.lastStepAt = Date.now();
+    }
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
     }
@@ -2594,13 +3020,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "GENERATION_FAILED") {
-    const { jobId, error, isRateLimited } = message.data;
+    const { jobId, error, isRateLimited, limitKind, limitText } = message.data;
     const rateLimited = Boolean(isRateLimited || /quota|limit reached|limit resets|rate limit/i.test(error || ''));
     const job = finishJob(jobId, rateLimited ? 'rate_limited' : 'failed', error);
 
-    // If quota or rate limit exceeded, mark slot as exhausted
     if (rateLimited && job && job.target) {
-      markSlotExhausted(job.target, job.accountSlot ?? 0);
+      const slot = job.accountSlot ?? 0;
+      markSlotExhausted(job.target, slot, { kind: limitKind, text: limitText || error });
+      rerouteQueuedJobsOffSlot(job.target, slot);
+      // Retry this job once on another account instead of failing it.
+      if (job.target === 'gemini' && !job.limitRerouted) {
+        const choice = chooseGeminiAccount(slot, job.dispatchMode);
+        if (choice && choice.slot !== slot) {
+          const retry = {
+            jobId, target: job.target, prompt: job.prompt, fullPrompt: job.fullPrompt, aspectRatio: job.aspectRatio,
+            modelQuality: job.modelQuality, accountSlot: choice.slot, timeoutSeconds: job.timeoutSeconds, images: job.images || [],
+            tabMode: job.tabMode, bringTabToFront: job.bringTabToFront, chatSessionMode: job.chatSessionMode || 'new_chat',
+            tabSessionId: job.tabSessionId, quality: job.quality, dispatchMode: job.dispatchMode, projectId: job.projectId || 'default',
+            source: job.source, receivedAt: job.receivedAt || Date.now(), deadline: Date.now() + 30 * 60 * 1000, limitRerouted: true
+          };
+          emitAuditLog('JOB_REROUTED_LIMIT', `Job ${jobId}: slot ${slot} hit its limit; retrying on slot ${choice.slot} (${choice.reason})`, {
+            jobId, target: job.target, accountSlot: choice.slot, email: maskEmail(knownGoogleAccounts.get(choice.slot)?.email)
+          });
+          sendToBridge({ type: "GENERATION_PROGRESS", data: { jobId, step: 'rerouted', detail: `Account on slot ${slot} hit its image limit. Retrying on slot ${choice.slot}...`, timestamp: Date.now() } });
+          routeJobToTab(retry).catch(err => {
+            sendToBridge({ type: "GENERATION_FAILED", data: { jobId, error: `${error} (retry on another account failed: ${err.message || err})` } });
+          });
+          sendResponse({ ack: true });
+          return true;
+        }
+        if (!choice) {
+          const msg = `${error} ${allLimitedMessage('gemini')}`;
+          sendToBridge({ type: "GENERATION_FAILED", data: { jobId, error: msg } });
+          sendResponse({ ack: true });
+          return true;
+        }
+      }
     }
 
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -2817,7 +3272,7 @@ async function discardBEITabs() {
   try {
     const tabs = await chrome.tabs.query({});
     for (const t of tabs) {
-      if (!t.id || busyTabIds.has(t.id) || t.active || t.discarded) continue;
+      if (!t.id || busyTabIds.has(t.id) || getTabLoad(t.id) > 0 || t.active || t.discarded) continue;
       const url = (t.url || t.pendingUrl || '').toLowerCase();
       if (url.includes('gemini.google.com') || url.includes('chatgpt.com')) {
         try {
@@ -2911,8 +3366,27 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 });
 
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  const move = (map) => { if (map.has(removedTabId)) { map.set(addedTabId, map.get(removedTabId)); map.delete(removedTabId); } };
+  move(tabQueues); move(tabChatState); move(tabEmailsCache); move(tabChatHistory);
+  if (busyTabs.delete(removedTabId)) busyTabs.add(addedTabId);
+  if (tabStarting.delete(removedTabId)) tabStarting.add(addedTabId);
+  keepVisibleTabs.delete(removedTabId); // the debugger session does not survive a replace
+  clearTabIdle(removedTabId);
+  let moved = 0;
+  for (const job of activeJobs.values()) if (job.tabId === removedTabId) { job.tabId = addedTabId; moved++; }
+  persistSessionJobs();
+  persistTabChatState();
+  emitAuditLog('TAB_REPLACED', `Tab ${removedTabId} was replaced by ${addedTabId} (browser sleep/wake); moved its queue and ${moved} running job(s)`, { tabId: addedTabId });
+  if (getTabLoad(addedTabId) > 0) {
+    if (isTabWorking(addedTabId)) markTabBusy(addedTabId); else processTabQueue(addedTabId);
+  }
+});
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   releaseTab(tabId);
+  keepVisibleTabs.delete(tabId);
+  clearTabIdle(tabId);
   const cachedEmail = tabEmailsCache.get(tabId);
   tabEmailsCache.delete(tabId);
   tabChatState.delete(tabId);

@@ -719,6 +719,11 @@
       return true;
     }
 
+    if (request.action === 'PAGE_VISIBILITY') {
+      sendResponse({ success: true, state: document.visibilityState });
+      return true;
+    }
+
     if (request.action === 'GET_TAB_INFO') {
       const email = extractChatGPTAccountEmail();
       sendResponse({

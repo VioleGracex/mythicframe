@@ -9,7 +9,7 @@ import { getActiveAIProvider, setActiveAIProvider } from '../../services/aiProvi
 import { getOpenAIApiKey, setOpenAIApiKey, testOpenAIConnection } from '../../services/openAIService';
 import { getOpenCodeConfig, setOpenCodeConfig, testOpenCodeConnection, OpenCodeConfig } from '../../services/openCodeService';
 import { 
-  getBEIConfig, setBEIConfig, checkBEIConnection, openBEITab, scanBEIAccounts, 
+  getBEIConfig, setBEIConfig, checkBEIConnection, openBEITab, scanBEIAccounts, clearBEIAccountLimit,
   updateBEIAccountCustomInfo, BEIStatusResponse, DEFAULT_BEI_PORT,
   getBEIAccountPriorityOrder, setBEIAccountPriorityOrder, sortTabsByPriorityOrder, 
   getTabAccountKey, BEITabDetail,
@@ -1417,6 +1417,33 @@ const Settings: React.FC<SettingsProps> = ({
                                                  );
                                               })()}
 
+                                              {/* Image-limit cooldown: this account is skipped until the timer ends */}
+                                              {tab.target === 'gemini' && tab.limitedUntil && tab.limitedUntil > Date.now() && (() => {
+                                                 const mins = Math.max(1, Math.round((tab.limitedUntil - Date.now()) / 60000));
+                                                 const left = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${mins % 60 ? ` ${mins % 60}m` : ''}`;
+                                                 return (
+                                                    <span className="flex items-center gap-1">
+                                                       <span
+                                                          className="px-2 py-1 rounded text-[11px] font-bold border bg-red-950/50 text-red-300 border-red-700/60"
+                                                          title={`Hit its image limit. BEI skips this account until ${new Date(tab.limitedUntil).toLocaleTimeString()}.`}
+                                                       >
+                                                          Limit · resets in {left}
+                                                       </span>
+                                                       <button
+                                                          type="button"
+                                                          onClick={async () => {
+                                                             await clearBEIAccountLimit(tab.email, tab.accountSlot);
+                                                             await handleCheckBEI();
+                                                          }}
+                                                          className="px-2 py-1 rounded text-[11px] font-semibold border bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700 cursor-pointer"
+                                                          title="Clear the cooldown now (use when you know the limit has reset)"
+                                                       >
+                                                          Clear
+                                                       </button>
+                                                    </span>
+                                                 );
+                                              })()}
+
                                               {/* Set Active / Active Status */}
                                               {isSelected ? (
                                                  <span className="px-2.5 py-1 rounded bg-purple-600/30 text-purple-300 border border-purple-500/50 font-bold text-[11px] flex items-center gap-1">
@@ -1973,6 +2000,25 @@ const Settings: React.FC<SettingsProps> = ({
                                </p>
                             </div>
                          </label>
+
+                         {/* Background tabs: keep worker tabs running while Chrome is minimized / tab hidden */}
+                         <div className="flex items-center justify-between gap-3 p-2.5 rounded bg-slate-900 border border-slate-800">
+                            <div className="text-xs">
+                               <span className="font-bold text-slate-200">Background tabs (Chrome minimized / tab hidden)</span>
+                               <p className="text-[10px] text-slate-400">
+                                  Keep active: Chrome keeps rendering the worker tab via the debugger API (shows a "started debugging" banner while jobs run). Bring to front: restores the window and switches to the tab only when a job stalls. Off: never touch windows.
+                               </p>
+                            </div>
+                            <select
+                               value={beiConfigState.backgroundMode || 'debugger'}
+                               onChange={(e) => handleUpdateBEIConfig({ backgroundMode: e.target.value as 'debugger' | 'assist' | 'off' })}
+                               className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 shrink-0"
+                            >
+                               <option value="debugger">Keep active</option>
+                               <option value="assist">Bring to front on stall</option>
+                               <option value="off">Off</option>
+                            </select>
+                         </div>
 
                          {/* Chat Lifecycle / Account Clutter Prevention */}
                          <div className="space-y-1.5 pt-1">
